@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="SnackLoad">
+  <rect width="512" height="512" rx="112" fill="#0b2141"/>
+  <!-- motion lines: the "route it" half of the mark -->
+  <g fill="#f04e23">
+    <rect x="52" y="196" width="116" height="26" rx="13"/>
+    <rect x="28" y="243" width="150" height="26" rx="13"/>
+    <rect x="60" y="290" width="104" height="26" rx="13"/>
+  </g>
+  <!-- box truck, travelling right -->
+  <g fill="#ffffff">
+    <path d="M196 168h150a14 14 0 0 1 14 14v138H196a14 14 0 0 1-14-14V182a14 14 0 0 1 14-14z"/>
+    <path d="M374 214h46a22 22 0 0 1 17.6 8.8l32 42.7a22 22 0 0 1 4.4 13.2V306a14 14 0 0 1-14 14h-86V214z"/>
+  </g>
+  <!-- cargo slot: reads as inventory inside the box -->
+  <rect x="214" y="196" width="118" height="38" rx="9" fill="#2563ac"/>
+  <g fill="#0b2141">
+    <circle cx="264" cy="344" r="42"/>
+    <circle cx="414" cy="344" r="42"/>
+  </g>
+  <g fill="#ffffff">
+    <circle cx="264" cy="344" r="19"/>
+    <circle cx="414" cy="344" r="19"/>
+  </g>
+</svg>

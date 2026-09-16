@@ -1,0 +1,1780 @@
+// SnackLoad — relational model.
+// Design rationale lives in docs/01-data-model.md; the invariants this schema is
+// shaped to protect are in docs/02-inventory-and-money-rules.md.
+//
+// Conventions:
+//   * Every tenant-owned table carries organizationId and indexes it first.
+//   * All quantities are SIGNED INTEGERS in the product's base unit.
+//   * All money is Decimal. Amounts 14,4 · prices 12,4 · costs 16,6 · rates 9,6.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Tenancy & identity
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum OrganizationStatus {
+  ACTIVE
+  SUSPENDED
+  CANCELLED
+}
+
+model Organization {
+  id            String             @id @default(cuid())
+  name          String
+  slug          String             @unique
+  legalName     String?
+  email         String?
+  phone         String?
+  addressLine1  String?
+  addressLine2  String?
+  city          String?
+  state         String?
+  postalCode    String?
+  country       String             @default("US")
+  timezone      String             @default("America/New_York")
+  currency      String             @default("USD")
+  logoUrl       String?
+  receiptFooter String?
+  status        OrganizationStatus @default(ACTIVE)
+  plan          String             @default("standard")
+
+  /// Per-org behaviour switches (see docs/02 §L4). Shape: OrganizationSettings.
+  settings       Json @default("{}")
+  /// Completion state of the onboarding checklist (spec §49).
+  onboardingJson Json @default("{}")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  memberships            Membership[]
+  roles                  Role[]
+  invitations            Invitation[]
+  sessions               Session[]
+  suppliers              Supplier[]
+  categories             ProductCategory[]
+  products               Product[]
+  productUoms            ProductUom[]
+  priceGroups            PriceGroup[]
+  priceGroupPrices       PriceGroupPrice[]
+  customerPrices         CustomerPrice[]
+  taxRates               TaxRate[]
+  customers              Customer[]
+  customerContacts       CustomerContact[]
+  inventoryLocations     InventoryLocation[]
+  warehouses             Warehouse[]
+  vehicles               Vehicle[]
+  inventoryBalances      InventoryBalance[]
+  inventoryTransactions  InventoryTransaction[]
+  inventoryLines         InventoryTransactionLine[]
+  receivings             Receiving[]
+  receivingItems         ReceivingItem[]
+  truckLoads             TruckLoad[]
+  truckLoadItems         TruckLoadItem[]
+  routeTemplates         RouteTemplate[]
+  customerSchedules      CustomerSchedule[]
+  routes                 Route[]
+  routeStops             RouteStop[]
+  routeAssignmentHistory RouteAssignmentHistory[]
+  routeCloseouts         RouteCloseout[]
+  routeCloseoutItems     RouteCloseoutItem[]
+  sales                  Sale[]
+  saleItems              SaleItem[]
+  receipts               Receipt[]
+  signatures             Signature[]
+  payments               Payment[]
+  paymentAllocations     PaymentAllocation[]
+  returns                Return[]
+  returnItems            ReturnItem[]
+  creditMemos            CreditMemo[]
+  creditApplications     CreditMemoApplication[]
+  importJobs             ImportJob[]
+  importRows             ImportRow[]
+  integrations           IntegrationConnection[]
+  externalMappings       ExternalMapping[]
+  syncJobs               SyncJob[]
+  syncLogs               SyncLog[]
+  outboxEvents           OutboxEvent[]
+  notifications          Notification[]
+  auditLogs              AuditLog[]
+  documentSequences      DocumentSequence[]
+
+  @@map("organization")
+}
+
+enum UserStatus {
+  ACTIVE
+  DISABLED
+}
+
+/// Global identity. Access to a company is granted by Membership, never by this row.
+model User {
+  id               String     @id @default(cuid())
+  email            String     @unique
+  passwordHash     String
+  passwordAlgo     String     @default("scrypt")
+  firstName        String
+  lastName         String
+  phone            String?
+  avatarUrl        String?
+  status           UserStatus @default(ACTIVE)
+  lastLoginAt      DateTime?
+  failedLoginCount Int        @default(0)
+  lockedUntil      DateTime?
+  createdAt        DateTime   @default(now())
+  updatedAt        DateTime   @updatedAt
+
+  memberships           Membership[]
+  sessions              Session[]
+  invitationsSent       Invitation[]             @relation("InvitationInviter")
+  invitationsAccepted   Invitation[]             @relation("InvitationAcceptor")
+  vehiclesAssigned      Vehicle[]                @relation("VehicleAssignee")
+  routeTemplatesDefault RouteTemplate[]          @relation("RouteTemplateDefaultRunner")
+  routesRun             Route[]                  @relation("RouteRunner")
+  inventoryTransactions InventoryTransaction[]   @relation("InventoryTransactionActor")
+  receivings            Receiving[]              @relation("ReceivingActor")
+  truckLoadsCreated     TruckLoad[]              @relation("TruckLoadCreator")
+  truckLoadsRun         TruckLoad[]              @relation("TruckLoadRunner")
+  salesSold             Sale[]                   @relation("SaleSeller")
+  salesVoided           Sale[]                   @relation("SaleVoider")
+  paymentsReceived      Payment[]                @relation("PaymentReceiver")
+  paymentsReversed      Payment[]                @relation("PaymentReverser")
+  returnsCreated        Return[]                 @relation("ReturnCreator")
+  closeoutsSubmitted    RouteCloseout[]          @relation("CloseoutSubmitter")
+  closeoutsReviewed     RouteCloseout[]          @relation("CloseoutReviewer")
+  reassignmentsFrom     RouteAssignmentHistory[] @relation("ReassignFrom")
+  reassignmentsTo       RouteAssignmentHistory[] @relation("ReassignTo")
+  reassignmentsCreated  RouteAssignmentHistory[] @relation("ReassignActor")
+  importJobs            ImportJob[]              @relation("ImportCreator")
+  integrationsConnected IntegrationConnection[]  @relation("IntegrationConnector")
+  notifications         Notification[]
+  auditLogs             AuditLog[]
+
+  @@index([status])
+  @@map("app_user")
+}
+
+enum MembershipStatus {
+  ACTIVE
+  SUSPENDED
+  REMOVED
+}
+
+model Membership {
+  id               String           @id @default(cuid())
+  organizationId   String
+  userId           String
+  roleId           String
+  status           MembershipStatus @default(ACTIVE)
+  employeeCode     String?
+  /// Truck this person normally drives; the default selling location for their sales.
+  defaultVehicleId String?
+  joinedAt         DateTime         @default(now())
+  removedAt        DateTime?
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role           Role         @relation(fields: [roleId], references: [id])
+  defaultVehicle Vehicle?     @relation(fields: [defaultVehicleId], references: [id])
+
+  @@unique([organizationId, userId])
+  @@index([organizationId, status])
+  @@index([userId])
+  @@map("membership")
+}
+
+/// A named bundle of permissions. Seeded per organization so custom roles in V2
+/// are an INSERT, not a deploy. Nothing in the codebase branches on role.key.
+model Role {
+  id             String   @id @default(cuid())
+  organizationId String
+  key            String
+  name           String
+  description    String?
+  isSystem       Boolean  @default(false)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  permissions  RolePermission[]
+  memberships  Membership[]
+  invitations  Invitation[]
+
+  @@unique([organizationId, key])
+  @@index([organizationId])
+  @@map("role")
+}
+
+model RolePermission {
+  id         String @id @default(cuid())
+  roleId     String
+  permission String
+
+  role Role @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@unique([roleId, permission])
+  @@index([roleId])
+  @@map("role_permission")
+}
+
+model Invitation {
+  id               String    @id @default(cuid())
+  organizationId   String
+  email            String
+  roleId           String
+  tokenHash        String    @unique
+  invitedByUserId  String
+  expiresAt        DateTime
+  acceptedAt       DateTime?
+  acceptedByUserId String?
+  revokedAt        DateTime?
+  createdAt        DateTime  @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  role         Role         @relation(fields: [roleId], references: [id])
+  invitedBy    User         @relation("InvitationInviter", fields: [invitedByUserId], references: [id])
+  acceptedBy   User?        @relation("InvitationAcceptor", fields: [acceptedByUserId], references: [id])
+
+  @@index([organizationId, email])
+  @@map("invitation")
+}
+
+enum SessionClient {
+  WEB
+  NATIVE
+  API
+}
+
+/// The raw token is never stored — only sha256(token). Cookie and Bearer are two
+/// carriers of the same credential (docs/04 §2).
+model Session {
+  id             String        @id @default(cuid())
+  userId         String
+  organizationId String
+  tokenHash      String        @unique
+  client         SessionClient @default(WEB)
+  userAgent      String?
+  ipAddress      String?
+  expiresAt      DateTime
+  lastUsedAt     DateTime      @default(now())
+  revokedAt      DateTime?
+  createdAt      DateTime      @default(now())
+
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("session")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Catalog
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Supplier {
+  id             String   @id @default(cuid())
+  organizationId String
+  name           String
+  accountNumber  String?
+  contactName    String?
+  phone          String?
+  email          String?
+  addressLine1   String?
+  city           String?
+  state          String?
+  postalCode     String?
+  leadTimeDays   Int?
+  active         Boolean  @default(true)
+  notes          String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  products     Product[]
+  receivings   Receiving[]
+
+  @@unique([organizationId, name])
+  @@index([organizationId, active])
+  @@map("supplier")
+}
+
+model ProductCategory {
+  id             String   @id @default(cuid())
+  organizationId String
+  name           String
+  parentId       String?
+  sortOrder      Int      @default(0)
+  active         Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  parent       ProductCategory?  @relation("CategoryTree", fields: [parentId], references: [id])
+  children     ProductCategory[] @relation("CategoryTree")
+  products     Product[]
+
+  @@unique([organizationId, name])
+  @@index([organizationId, active])
+  @@map("product_category")
+}
+
+model Product {
+  id             String  @id @default(cuid())
+  organizationId String
+  sku            String
+  upc            String?
+  name           String
+  description    String?
+  brand          String?
+  categoryId     String?
+  supplierId     String?
+
+  /// Label for the atom this product is counted in (BAG, BOTTLE, CAN, BAR…).
+  /// Every stored quantity in the system is an integer count of these.
+  baseUomLabel String @default("Each")
+
+  /// Weighted-average acquisition cost of ONE base unit. Six decimals because
+  /// a case cost divided by a case factor is rarely exact (docs/02 §M1).
+  costPerBaseUnit Decimal @default(0) @db.Decimal(16, 6)
+
+  reorderPointBaseUnits Int      @default(0)
+  taxable               Boolean  @default(true)
+  active                Boolean  @default(true)
+  imageUrl              String?
+  weightGrams           Int?
+  notes                 String?
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  organization     Organization               @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  category         ProductCategory?           @relation(fields: [categoryId], references: [id])
+  supplier         Supplier?                  @relation(fields: [supplierId], references: [id])
+  uoms             ProductUom[]
+  balances         InventoryBalance[]
+  ledgerLines      InventoryTransactionLine[]
+  receivingItems   ReceivingItem[]
+  truckLoadItems   TruckLoadItem[]
+  saleItems        SaleItem[]
+  returnItems      ReturnItem[]
+  closeoutItems    RouteCloseoutItem[]
+  priceGroupPrices PriceGroupPrice[]
+  customerPrices   CustomerPrice[]
+
+  @@unique([organizationId, sku])
+  @@unique([organizationId, upc])
+  @@index([organizationId, active])
+  @@index([organizationId, name])
+  @@index([organizationId, categoryId])
+  @@map("product")
+}
+
+enum UomCode {
+  EACH
+  CASE
+  BOX
+  PACK
+  TRAY
+  CUSTOM
+}
+
+/// The only source of packaging truth. Every product has exactly one row with
+/// isBase = true and baseUnitsPerUom = 1; cases/boxes/packs are additional rows.
+/// Case price is NOT required to equal unit price × factor (docs/02 §Q4).
+model ProductUom {
+  id               String  @id @default(cuid())
+  organizationId   String
+  productId        String
+  code             UomCode
+  label            String
+  /// How many base units one of these contains. Must be > 0.
+  baseUnitsPerUom  Int
+  price            Decimal @default(0) @db.Decimal(12, 4)
+  barcode          String?
+  isBase           Boolean @default(false)
+  isDefaultSaleUom Boolean @default(false)
+  sortOrder        Int     @default(0)
+  active           Boolean @default(true)
+
+  organization     Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  product          Product           @relation(fields: [productId], references: [id], onDelete: Cascade)
+  saleItems        SaleItem[]
+  returnItems      ReturnItem[]
+  receivingItems   ReceivingItem[]
+  truckLoadItems   TruckLoadItem[]
+  priceGroupPrices PriceGroupPrice[]
+  customerPrices   CustomerPrice[]
+
+  @@unique([productId, code])
+  @@index([organizationId, barcode])
+  @@map("product_uom")
+}
+
+model TaxRate {
+  id             String  @id @default(cuid())
+  organizationId String
+  name           String
+  /// e.g. 0.072500 for 7.25%
+  rate           Decimal @db.Decimal(9, 6)
+  isDefault      Boolean @default(false)
+  active         Boolean @default(true)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  customers    Customer[]
+
+  @@unique([organizationId, name])
+  @@map("tax_rate")
+}
+
+model PriceGroup {
+  id             String   @id @default(cuid())
+  organizationId String
+  name           String
+  description    String?
+  active         Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  prices       PriceGroupPrice[]
+  customers    Customer[]
+
+  @@unique([organizationId, name])
+  @@map("price_group")
+}
+
+model PriceGroupPrice {
+  id             String    @id @default(cuid())
+  organizationId String
+  priceGroupId   String
+  productId      String
+  productUomId   String?
+  price          Decimal   @db.Decimal(12, 4)
+  effectiveFrom  DateTime  @default(now())
+  effectiveTo    DateTime?
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  priceGroup   PriceGroup   @relation(fields: [priceGroupId], references: [id], onDelete: Cascade)
+  product      Product      @relation(fields: [productId], references: [id], onDelete: Cascade)
+  productUom   ProductUom?  @relation(fields: [productUomId], references: [id])
+
+  @@index([organizationId, priceGroupId, productId])
+  @@map("price_group_price")
+}
+
+model CustomerPrice {
+  id             String    @id @default(cuid())
+  organizationId String
+  customerId     String
+  productId      String
+  productUomId   String?
+  price          Decimal   @db.Decimal(12, 4)
+  effectiveFrom  DateTime  @default(now())
+  effectiveTo    DateTime?
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  customer     Customer     @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  product      Product      @relation(fields: [productId], references: [id], onDelete: Cascade)
+  productUom   ProductUom?  @relation(fields: [productUomId], references: [id])
+
+  @@index([organizationId, customerId, productId])
+  @@map("customer_price")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Customers
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum PaymentTerms {
+  COD
+  NET7
+  NET15
+  NET30
+  NET60
+}
+
+model Customer {
+  id             String   @id @default(cuid())
+  organizationId String
+  accountNumber  String
+  name           String
+  parentCompany  String?
+  addressLine1   String?
+  addressLine2   String?
+  city           String?
+  state          String?
+  postalCode     String?
+  latitude       Decimal? @db.Decimal(9, 6)
+  longitude      Decimal? @db.Decimal(9, 6)
+  phone          String?
+  email          String?
+
+  priceGroupId     String?
+  paymentTermsCode PaymentTerms @default(COD)
+  creditLimit      Decimal?     @db.Decimal(14, 4)
+  taxExempt        Boolean      @default(false)
+  taxExemptId      String?
+  taxRateId        String?
+
+  /// Cache of open AR. Source of truth is the sum of open sale balances less
+  /// unapplied payments and open credits; recomputable (docs/02 §A2).
+  balance Decimal @default(0) @db.Decimal(14, 4)
+
+  deliveryInstructions String?
+  notes                String?
+  active               Boolean   @default(true)
+  lastVisitAt          DateTime?
+  nextDueOn            DateTime? @db.Date
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+
+  organization Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  priceGroup   PriceGroup?        @relation(fields: [priceGroupId], references: [id])
+  taxRate      TaxRate?           @relation(fields: [taxRateId], references: [id])
+  contacts     CustomerContact[]
+  prices       CustomerPrice[]
+  schedules    CustomerSchedule[]
+  routeStops   RouteStop[]
+  sales        Sale[]
+  payments     Payment[]
+  returns      Return[]
+  creditMemos  CreditMemo[]
+
+  @@unique([organizationId, accountNumber])
+  @@index([organizationId, active, name])
+  @@index([organizationId, nextDueOn])
+  @@map("customer")
+}
+
+model CustomerContact {
+  id             String  @id @default(cuid())
+  organizationId String
+  customerId     String
+  name           String
+  title          String?
+  phone          String?
+  email          String?
+  isPrimary      Boolean @default(false)
+  notes          String?
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  customer     Customer     @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, customerId])
+  @@map("customer_contact")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Inventory
+//
+// A warehouse and a truck differ in what they are, not in how stock moves — so
+// both are InventoryLocations and there is exactly one ledger (docs/01 §D1).
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum InventoryLocationKind {
+  WAREHOUSE
+  VEHICLE
+}
+
+model InventoryLocation {
+  id             String                @id @default(cuid())
+  organizationId String
+  kind           InventoryLocationKind
+  name           String
+  code           String?
+  active         Boolean               @default(true)
+  createdAt      DateTime              @default(now())
+
+  organization Organization               @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  warehouse    Warehouse?
+  vehicle      Vehicle?
+  balances     InventoryBalance[]
+  ledgerLines  InventoryTransactionLine[]
+  receivings   Receiving[]
+
+  @@index([organizationId, kind, active])
+  @@map("inventory_location")
+}
+
+model Warehouse {
+  id             String   @id @default(cuid())
+  organizationId String
+  locationId     String   @unique
+  addressLine1   String?
+  city           String?
+  state          String?
+  postalCode     String?
+  isPrimary      Boolean  @default(false)
+  notes          String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  location     InventoryLocation @relation(fields: [locationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
+  @@map("warehouse")
+}
+
+model Vehicle {
+  id             String   @id @default(cuid())
+  organizationId String
+  locationId     String   @unique
+  name           String
+  truckNumber    String
+  licensePlate   String?
+  assignedUserId String?
+  active         Boolean  @default(true)
+  notes          String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization   Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  location       InventoryLocation @relation(fields: [locationId], references: [id], onDelete: Cascade)
+  assignedUser   User?             @relation("VehicleAssignee", fields: [assignedUserId], references: [id])
+  routes         Route[]
+  truckLoads     TruckLoad[]
+  routeTemplates RouteTemplate[]   @relation("RouteTemplateDefaultVehicle")
+  memberships    Membership[]
+
+  @@unique([organizationId, truckNumber])
+  @@index([organizationId, active])
+  @@map("vehicle")
+}
+
+/// Derived cache of the ledger, maintained in the same transaction under a row
+/// lock. SUM(ledger) must equal this for every pair (docs/02 §L6).
+model InventoryBalance {
+  id             String   @id @default(cuid())
+  organizationId String
+  locationId     String
+  productId      String
+  /// Signed integer count of base units.
+  quantity       Int      @default(0)
+  /// Moving-average cost of one base unit at this location.
+  avgUnitCost    Decimal  @default(0) @db.Decimal(16, 6)
+  updatedAt      DateTime @updatedAt
+
+  organization Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  location     InventoryLocation @relation(fields: [locationId], references: [id], onDelete: Cascade)
+  product      Product           @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([locationId, productId])
+  @@index([organizationId, productId])
+  @@map("inventory_balance")
+}
+
+enum InventoryTransactionType {
+  SUPPLIER_RECEIPT
+  TRUCK_LOAD
+  TRUCK_UNLOAD
+  TRANSFER
+  SALE
+  CUSTOMER_RETURN
+  DAMAGE
+  EXPIRED
+  MISSING
+  SAMPLE
+  CORRECTION
+  COUNT_ADJUSTMENT
+  REVERSAL
+}
+
+/// Append-only. Never updated, never deleted. Mistakes are corrected by posting
+/// a CORRECTION or a REVERSAL that points back via reversalOfId (docs/02 §L1).
+model InventoryTransaction {
+  id              String                   @id @default(cuid())
+  organizationId  String
+  type            InventoryTransactionType
+  occurredAt      DateTime                 @default(now())
+  createdByUserId String?
+  referenceType   String?
+  referenceId     String?
+  reasonCode      String?
+  notes           String?
+  idempotencyKey  String?
+  reversalOfId    String?
+  createdAt       DateTime                 @default(now())
+
+  organization Organization               @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  createdBy    User?                      @relation("InventoryTransactionActor", fields: [createdByUserId], references: [id])
+  reversalOf   InventoryTransaction?      @relation("TransactionReversal", fields: [reversalOfId], references: [id])
+  reversals    InventoryTransaction[]     @relation("TransactionReversal")
+  lines        InventoryTransactionLine[]
+  receiving    Receiving?
+  truckLoad    TruckLoad?
+  sale         Sale?
+  return       Return?
+
+  @@unique([organizationId, idempotencyKey])
+  @@index([organizationId, type, occurredAt])
+  @@index([organizationId, referenceType, referenceId])
+  @@map("inventory_transaction")
+}
+
+model InventoryTransactionLine {
+  id             String  @id @default(cuid())
+  organizationId String
+  transactionId  String
+  productId      String
+  locationId     String
+  /// Signed base units. For TRANSFER/TRUCK_LOAD/TRUCK_UNLOAD these must sum to
+  /// zero per product across the transaction (docs/02 §L2).
+  quantityDelta  Int
+  unitCost       Decimal @db.Decimal(16, 6)
+  balanceAfter   Int
+  notes          String?
+
+  organization Organization         @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  transaction  InventoryTransaction @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+  product      Product              @relation(fields: [productId], references: [id])
+  location     InventoryLocation    @relation(fields: [locationId], references: [id])
+
+  @@index([transactionId])
+  @@index([organizationId, productId, locationId])
+  @@map("inventory_transaction_line")
+}
+
+model Receiving {
+  id                     String   @id @default(cuid())
+  organizationId         String
+  supplierId             String?
+  warehouseLocationId    String
+  referenceNumber        String?
+  receivedAt             DateTime @default(now())
+  receivedByUserId       String?
+  notes                  String?
+  inventoryTransactionId String?  @unique
+  idempotencyKey         String?
+  createdAt              DateTime @default(now())
+
+  organization Organization          @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  supplier     Supplier?             @relation(fields: [supplierId], references: [id])
+  location     InventoryLocation     @relation(fields: [warehouseLocationId], references: [id])
+  receivedBy   User?                 @relation("ReceivingActor", fields: [receivedByUserId], references: [id])
+  transaction  InventoryTransaction? @relation(fields: [inventoryTransactionId], references: [id])
+  items        ReceivingItem[]
+
+  @@unique([organizationId, idempotencyKey])
+  @@index([organizationId, receivedAt])
+  @@map("receiving")
+}
+
+model ReceivingItem {
+  id             String  @id @default(cuid())
+  organizationId String
+  receivingId    String
+  productId      String
+  productUomId   String
+  quantity       Int
+  baseQuantity   Int
+  unitCost       Decimal @db.Decimal(16, 6)
+  lineCost       Decimal @db.Decimal(14, 4)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  receiving    Receiving    @relation(fields: [receivingId], references: [id], onDelete: Cascade)
+  product      Product      @relation(fields: [productId], references: [id])
+  productUom   ProductUom   @relation(fields: [productUomId], references: [id])
+
+  @@index([receivingId])
+  @@map("receiving_item")
+}
+
+enum TruckLoadDirection {
+  LOAD
+  UNLOAD
+}
+
+enum TruckLoadStatus {
+  DRAFT
+  CONFIRMED
+  CANCELLED
+}
+
+/// A draft load holds no stock; confirming it posts the transfer transaction.
+model TruckLoad {
+  id                     String             @id @default(cuid())
+  organizationId         String
+  vehicleId              String
+  routeId                String?
+  runnerUserId           String?
+  direction              TruckLoadDirection @default(LOAD)
+  status                 TruckLoadStatus    @default(DRAFT)
+  warehouseLocationId    String
+  loadedAt               DateTime?
+  createdByUserId        String?
+  notes                  String?
+  inventoryTransactionId String?            @unique
+  idempotencyKey         String?
+  createdAt              DateTime           @default(now())
+  updatedAt              DateTime           @updatedAt
+
+  organization Organization          @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  vehicle      Vehicle               @relation(fields: [vehicleId], references: [id])
+  route        Route?                @relation(fields: [routeId], references: [id])
+  runner       User?                 @relation("TruckLoadRunner", fields: [runnerUserId], references: [id])
+  createdBy    User?                 @relation("TruckLoadCreator", fields: [createdByUserId], references: [id])
+  transaction  InventoryTransaction? @relation(fields: [inventoryTransactionId], references: [id])
+  items        TruckLoadItem[]
+
+  @@unique([organizationId, idempotencyKey])
+  @@index([organizationId, vehicleId, status])
+  @@map("truck_load")
+}
+
+model TruckLoadItem {
+  id             String @id @default(cuid())
+  organizationId String
+  truckLoadId    String
+  productId      String
+  productUomId   String
+  quantity       Int
+  baseQuantity   Int
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  truckLoad    TruckLoad    @relation(fields: [truckLoadId], references: [id], onDelete: Cascade)
+  product      Product      @relation(fields: [productId], references: [id])
+  productUom   ProductUom   @relation(fields: [productUomId], references: [id])
+
+  @@index([truckLoadId])
+  @@map("truck_load_item")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Routes
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum DayOfWeek {
+  MONDAY
+  TUESDAY
+  WEDNESDAY
+  THURSDAY
+  FRIDAY
+  SATURDAY
+  SUNDAY
+}
+
+enum ScheduleFrequency {
+  WEEKLY
+  BIWEEKLY
+  TRIWEEKLY
+  MONTHLY
+  CUSTOM
+}
+
+model RouteTemplate {
+  id                  String     @id @default(cuid())
+  organizationId      String
+  name                String
+  code                String?
+  color               String?
+  dayOfWeek           DayOfWeek?
+  defaultRunnerUserId String?
+  defaultVehicleId    String?
+  active              Boolean    @default(true)
+  notes               String?
+  createdAt           DateTime   @default(now())
+  updatedAt           DateTime   @updatedAt
+
+  organization   Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  defaultRunner  User?              @relation("RouteTemplateDefaultRunner", fields: [defaultRunnerUserId], references: [id])
+  defaultVehicle Vehicle?           @relation("RouteTemplateDefaultVehicle", fields: [defaultVehicleId], references: [id])
+  schedules      CustomerSchedule[]
+  routes         Route[]
+
+  @@unique([organizationId, name])
+  @@index([organizationId, active])
+  @@map("route_template")
+}
+
+/// The recurring service commitment for one account. "14 accounts due Tuesday"
+/// is a query over this table.
+model CustomerSchedule {
+  id              String            @id @default(cuid())
+  organizationId  String
+  customerId      String
+  routeTemplateId String
+  frequency       ScheduleFrequency @default(WEEKLY)
+  /// Only for frequency = CUSTOM.
+  intervalDays    Int?
+  dayOfWeek       DayOfWeek
+  /// For BIWEEKLY/TRIWEEKLY: which week of the cycle this account falls in.
+  weekOfCycle     Int?
+  sequence        Int               @default(0)
+  windowStart     String?
+  windowEnd       String?
+  active          Boolean           @default(true)
+  lastServicedOn  DateTime?         @db.Date
+  nextDueOn       DateTime?         @db.Date
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  organization  Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  customer      Customer      @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  routeTemplate RouteTemplate @relation(fields: [routeTemplateId], references: [id], onDelete: Cascade)
+
+  @@unique([customerId, routeTemplateId])
+  @@index([organizationId, dayOfWeek, active])
+  @@index([organizationId, nextDueOn])
+  @@map("customer_schedule")
+}
+
+enum RouteStatus {
+  PLANNED
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+}
+
+model Route {
+  id              String      @id @default(cuid())
+  organizationId  String
+  routeTemplateId String?
+  serviceDate     DateTime    @db.Date
+  name            String
+  runnerUserId    String
+  vehicleId       String?
+  status          RouteStatus @default(PLANNED)
+  startedAt       DateTime?
+  completedAt     DateTime?
+  plannedStops    Int         @default(0)
+  plannedMiles    Decimal?    @db.Decimal(9, 2)
+  plannedMinutes  Int?
+  actualMiles     Decimal?    @db.Decimal(9, 2)
+  startOdometer   Int?
+  endOdometer     Int?
+  notes           String?
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+
+  organization      Organization             @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  routeTemplate     RouteTemplate?           @relation(fields: [routeTemplateId], references: [id])
+  runner            User                     @relation("RouteRunner", fields: [runnerUserId], references: [id])
+  vehicle           Vehicle?                 @relation(fields: [vehicleId], references: [id])
+  stops             RouteStop[]
+  sales             Sale[]
+  truckLoads        TruckLoad[]
+  closeout          RouteCloseout?
+  assignmentHistory RouteAssignmentHistory[]
+
+  @@unique([organizationId, routeTemplateId, serviceDate])
+  @@index([organizationId, runnerUserId, serviceDate])
+  @@index([organizationId, serviceDate, status])
+  @@map("route")
+}
+
+enum RouteStopStatus {
+  PENDING
+  EN_ROUTE
+  ARRIVED
+  COMPLETED
+  SKIPPED
+  NO_SALE
+  STORE_CLOSED
+  RESCHEDULED
+}
+
+model RouteStop {
+  id                String          @id @default(cuid())
+  organizationId    String
+  routeId           String
+  customerId        String
+  sequence          Int
+  status            RouteStopStatus @default(PENDING)
+  plannedArrivalAt  DateTime?
+  arrivedAt         DateTime?
+  completedAt       DateTime?
+  distanceMiles     Decimal?        @db.Decimal(9, 2)
+  durationMinutes   Int?
+  outcomeReason     String?
+  rescheduledToDate DateTime?       @db.Date
+  notes             String?
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+
+  organization      Organization             @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  route             Route                    @relation(fields: [routeId], references: [id], onDelete: Cascade)
+  customer          Customer                 @relation(fields: [customerId], references: [id])
+  sales             Sale[]
+  payments          Payment[]
+  returns           Return[]
+  assignmentHistory RouteAssignmentHistory[]
+
+  @@unique([routeId, customerId])
+  @@index([routeId, sequence])
+  @@index([organizationId, status])
+  @@map("route_stop")
+}
+
+/// Appended when work moves between runners. The original route is never
+/// rewritten, so "who was supposed to run this" stays answerable.
+model RouteAssignmentHistory {
+  id              String   @id @default(cuid())
+  organizationId  String
+  routeId         String
+  routeStopId     String?
+  fromUserId      String?
+  toUserId        String
+  reason          String?
+  createdByUserId String?
+  createdAt       DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  route        Route        @relation(fields: [routeId], references: [id], onDelete: Cascade)
+  routeStop    RouteStop?   @relation(fields: [routeStopId], references: [id], onDelete: Cascade)
+  fromUser     User?        @relation("ReassignFrom", fields: [fromUserId], references: [id])
+  toUser       User         @relation("ReassignTo", fields: [toUserId], references: [id])
+  createdBy    User?        @relation("ReassignActor", fields: [createdByUserId], references: [id])
+
+  @@index([organizationId, routeId])
+  @@map("route_assignment_history")
+}
+
+enum CloseoutStatus {
+  OPEN
+  SUBMITTED
+  APPROVED
+  DISPUTED
+}
+
+model RouteCloseout {
+  id                String         @id @default(cuid())
+  organizationId    String
+  routeId           String         @unique
+  status            CloseoutStatus @default(OPEN)
+  submittedAt       DateTime?
+  submittedByUserId String?
+  reviewedAt        DateTime?
+  reviewedByUserId  String?
+
+  salesTotal     Decimal @default(0) @db.Decimal(14, 4)
+  returnsTotal   Decimal @default(0) @db.Decimal(14, 4)
+  expectedCash   Decimal @default(0) @db.Decimal(14, 4)
+  actualCash     Decimal @default(0) @db.Decimal(14, 4)
+  checkTotal     Decimal @default(0) @db.Decimal(14, 4)
+  cardTotal      Decimal @default(0) @db.Decimal(14, 4)
+  achTotal       Decimal @default(0) @db.Decimal(14, 4)
+  onAccountTotal Decimal @default(0) @db.Decimal(14, 4)
+  cashVariance   Decimal @default(0) @db.Decimal(14, 4)
+
+  notes     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  organization Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  route        Route               @relation(fields: [routeId], references: [id], onDelete: Cascade)
+  submittedBy  User?               @relation("CloseoutSubmitter", fields: [submittedByUserId], references: [id])
+  reviewedBy   User?               @relation("CloseoutReviewer", fields: [reviewedByUserId], references: [id])
+  items        RouteCloseoutItem[]
+
+  @@index([organizationId, status])
+  @@map("route_closeout")
+}
+
+model RouteCloseoutItem {
+  id               String  @id @default(cuid())
+  organizationId   String
+  closeoutId       String
+  productId        String
+  expectedQuantity Int
+  countedQuantity  Int?
+  varianceQuantity Int     @default(0)
+  varianceValue    Decimal @default(0) @db.Decimal(14, 4)
+
+  organization Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  closeout     RouteCloseout @relation(fields: [closeoutId], references: [id], onDelete: Cascade)
+  product      Product       @relation(fields: [productId], references: [id])
+
+  @@unique([closeoutId, productId])
+  @@map("route_closeout_item")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Sales, receipts, payments, returns
+//
+// A completed Sale with balanceDue > 0 IS the open invoice; Receipt is its
+// printable rendering. One document, so the two can never disagree (docs/02 §A1).
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum SaleStatus {
+  DRAFT
+  COMPLETED
+  VOIDED
+}
+
+enum PriceSource {
+  STANDARD
+  GROUP
+  CUSTOMER
+  PROMO
+  MANUAL
+}
+
+model Sale {
+  id             String     @id @default(cuid())
+  organizationId String
+  saleNumber     String
+  customerId     String
+  routeId        String?
+  routeStopId    String?
+  soldByUserId   String
+  status         SaleStatus @default(DRAFT)
+  occurredAt     DateTime   @default(now())
+
+  subtotal       Decimal @default(0) @db.Decimal(14, 4)
+  discountTotal  Decimal @default(0) @db.Decimal(14, 4)
+  taxTotal       Decimal @default(0) @db.Decimal(14, 4)
+  total          Decimal @default(0) @db.Decimal(14, 4)
+  amountPaid     Decimal @default(0) @db.Decimal(14, 4)
+  creditsApplied Decimal @default(0) @db.Decimal(14, 4)
+  balanceDue     Decimal @default(0) @db.Decimal(14, 4)
+
+  dueDate          DateTime?    @db.Date
+  paymentTermsCode PaymentTerms @default(COD)
+  taxExempt        Boolean      @default(false)
+  notes            String?
+
+  /// Minted client-side when the cart is created, so a retry after a timeout in
+  /// a dead-zone store cannot bill the store twice (docs/02 §I1).
+  idempotencyKey String
+
+  inventoryTransactionId String?   @unique
+  voidedAt               DateTime?
+  voidedByUserId         String?
+  voidReason             String?
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
+
+  organization       Organization            @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  customer           Customer                @relation(fields: [customerId], references: [id])
+  route              Route?                  @relation(fields: [routeId], references: [id])
+  routeStop          RouteStop?              @relation(fields: [routeStopId], references: [id])
+  soldBy             User                    @relation("SaleSeller", fields: [soldByUserId], references: [id])
+  voidedBy           User?                   @relation("SaleVoider", fields: [voidedByUserId], references: [id])
+  transaction        InventoryTransaction?   @relation(fields: [inventoryTransactionId], references: [id])
+  items              SaleItem[]
+  receipt            Receipt?
+  signature          Signature?
+  paymentAllocations PaymentAllocation[]
+  creditApplications CreditMemoApplication[]
+  returns            Return[]
+
+  @@unique([organizationId, saleNumber])
+  @@unique([organizationId, idempotencyKey])
+  @@index([organizationId, customerId, occurredAt])
+  @@index([organizationId, status, dueDate])
+  @@index([organizationId, routeId])
+  @@index([organizationId, soldByUserId, occurredAt])
+  @@map("sale")
+}
+
+model SaleItem {
+  id             String @id @default(cuid())
+  organizationId String
+  saleId         String
+  productId      String
+  productUomId   String
+
+  /// Snapshots: renaming a product must not rewrite last year's receipts.
+  productNameSnapshot String
+  skuSnapshot         String
+  uomLabelSnapshot    String
+
+  quantity     Int
+  baseQuantity Int
+
+  unitPrice      Decimal     @db.Decimal(12, 4)
+  lineSubtotal   Decimal     @db.Decimal(14, 4)
+  discountAmount Decimal     @default(0) @db.Decimal(14, 4)
+  taxAmount      Decimal     @default(0) @db.Decimal(14, 4)
+  lineTotal      Decimal     @db.Decimal(14, 4)
+  /// COGS is fixed at the moment of sale; later cost changes never restate a
+  /// closed month (docs/02 §L5).
+  unitCostAtSale Decimal     @default(0) @db.Decimal(16, 6)
+  priceSource    PriceSource @default(STANDARD)
+  sortOrder      Int         @default(0)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  sale         Sale         @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  product      Product      @relation(fields: [productId], references: [id])
+  productUom   ProductUom   @relation(fields: [productUomId], references: [id])
+
+  @@index([saleId])
+  @@index([organizationId, productId])
+  @@map("sale_item")
+}
+
+model Receipt {
+  id             String    @id @default(cuid())
+  organizationId String
+  saleId         String    @unique
+  receiptNumber  String
+  issuedAt       DateTime  @default(now())
+  signatureId    String?   @unique
+  pdfPath        String?
+  emailedAt      DateTime?
+  textedAt       DateTime?
+  printedAt      DateTime?
+  version        Int       @default(1)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  sale         Sale         @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  signature    Signature?   @relation(fields: [signatureId], references: [id])
+
+  @@unique([organizationId, receiptNumber])
+  @@map("receipt")
+}
+
+model Signature {
+  id             String   @id @default(cuid())
+  organizationId String
+  saleId         String?  @unique
+  returnId       String?  @unique
+  signerName     String?
+  imagePng       Bytes
+  capturedAt     DateTime @default(now())
+  deviceInfo     String?
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  sale         Sale?        @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  return       Return?      @relation(fields: [returnId], references: [id], onDelete: Cascade)
+  receipt      Receipt?
+
+  @@index([organizationId])
+  @@map("signature")
+}
+
+enum PaymentMethod {
+  CASH
+  CHECK
+  CARD
+  ACH
+  OTHER
+}
+
+enum PaymentStatus {
+  POSTED
+  REVERSED
+}
+
+model Payment {
+  id               String        @id @default(cuid())
+  organizationId   String
+  customerId       String
+  method           PaymentMethod
+  amount           Decimal       @db.Decimal(14, 4)
+  /// Over-payment is legal and lands here as credit on account (docs/02 §A3).
+  unappliedAmount  Decimal       @default(0) @db.Decimal(14, 4)
+  receivedAt       DateTime      @default(now())
+  receivedByUserId String?
+  routeStopId      String?
+  checkNumber      String?
+  referenceNumber  String?
+  /// Reserved for Stripe/ACH processors; V1 records the tender only.
+  processorRef     String?
+  notes            String?
+  status           PaymentStatus @default(POSTED)
+  reversedAt       DateTime?
+  reversedByUserId String?
+  reversalOfId     String?       @unique
+  idempotencyKey   String
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+
+  organization Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  customer     Customer            @relation(fields: [customerId], references: [id])
+  receivedBy   User?               @relation("PaymentReceiver", fields: [receivedByUserId], references: [id])
+  reversedBy   User?               @relation("PaymentReverser", fields: [reversedByUserId], references: [id])
+  routeStop    RouteStop?          @relation(fields: [routeStopId], references: [id])
+  reversalOf   Payment?            @relation("PaymentReversal", fields: [reversalOfId], references: [id])
+  reversal     Payment?            @relation("PaymentReversal")
+  allocations  PaymentAllocation[]
+
+  @@unique([organizationId, idempotencyKey])
+  @@index([organizationId, customerId, receivedAt])
+  @@index([organizationId, receivedAt])
+  @@map("payment")
+}
+
+model PaymentAllocation {
+  id             String   @id @default(cuid())
+  organizationId String
+  paymentId      String
+  saleId         String
+  amount         Decimal  @db.Decimal(14, 4)
+  createdAt      DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  payment      Payment      @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+  sale         Sale         @relation(fields: [saleId], references: [id])
+
+  @@index([paymentId])
+  @@index([organizationId, saleId])
+  @@map("payment_allocation")
+}
+
+enum ReturnReason {
+  EXPIRED
+  DAMAGED
+  WRONG_ITEM
+  UNSOLD
+  SWAP
+  OTHER
+}
+
+enum ReturnDisposition {
+  TRUCK
+  WAREHOUSE
+  DESTROY
+}
+
+enum ReturnFinancialAction {
+  REFUND
+  ACCOUNT_CREDIT
+  REPLACEMENT
+  CREDIT_MEMO
+  NONE
+}
+
+enum ReturnStatus {
+  COMPLETED
+  VOIDED
+}
+
+model Return {
+  id              String                @id @default(cuid())
+  organizationId  String
+  returnNumber    String
+  customerId      String
+  saleId          String?
+  routeStopId     String?
+  createdByUserId String?
+  occurredAt      DateTime              @default(now())
+  reason          ReturnReason
+  disposition     ReturnDisposition
+  financialAction ReturnFinancialAction
+
+  subtotal Decimal      @default(0) @db.Decimal(14, 4)
+  taxTotal Decimal      @default(0) @db.Decimal(14, 4)
+  total    Decimal      @default(0) @db.Decimal(14, 4)
+  status   ReturnStatus @default(COMPLETED)
+
+  inventoryTransactionId String?  @unique
+  creditMemoId           String?  @unique
+  idempotencyKey         String
+  notes                  String?
+  createdAt              DateTime @default(now())
+
+  organization Organization          @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  customer     Customer              @relation(fields: [customerId], references: [id])
+  sale         Sale?                 @relation(fields: [saleId], references: [id])
+  routeStop    RouteStop?            @relation(fields: [routeStopId], references: [id])
+  createdBy    User?                 @relation("ReturnCreator", fields: [createdByUserId], references: [id])
+  transaction  InventoryTransaction? @relation(fields: [inventoryTransactionId], references: [id])
+  creditMemo   CreditMemo?           @relation(fields: [creditMemoId], references: [id])
+  items        ReturnItem[]
+  signature    Signature?
+
+  @@unique([organizationId, returnNumber])
+  @@unique([organizationId, idempotencyKey])
+  @@index([organizationId, customerId, occurredAt])
+  @@map("sales_return")
+}
+
+model ReturnItem {
+  id             String       @id @default(cuid())
+  organizationId String
+  returnId       String
+  productId      String
+  productUomId   String
+  quantity       Int
+  baseQuantity   Int
+  unitPrice      Decimal      @db.Decimal(12, 4)
+  lineTotal      Decimal      @db.Decimal(14, 4)
+  reason         ReturnReason
+  /// False for destroy/write-off: no positive ledger line is posted.
+  restock        Boolean      @default(true)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  return       Return       @relation(fields: [returnId], references: [id], onDelete: Cascade)
+  product      Product      @relation(fields: [productId], references: [id])
+  productUom   ProductUom   @relation(fields: [productUomId], references: [id])
+
+  @@index([returnId])
+  @@map("sales_return_item")
+}
+
+enum CreditMemoStatus {
+  OPEN
+  APPLIED
+  VOIDED
+}
+
+model CreditMemo {
+  id              String           @id @default(cuid())
+  organizationId  String
+  customerId      String
+  number          String
+  amount          Decimal          @db.Decimal(14, 4)
+  remainingAmount Decimal          @db.Decimal(14, 4)
+  status          CreditMemoStatus @default(OPEN)
+  issuedAt        DateTime         @default(now())
+  notes           String?
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+
+  organization Organization            @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  customer     Customer                @relation(fields: [customerId], references: [id])
+  return       Return?
+  applications CreditMemoApplication[]
+
+  @@unique([organizationId, number])
+  @@index([organizationId, customerId, status])
+  @@map("credit_memo")
+}
+
+model CreditMemoApplication {
+  id             String   @id @default(cuid())
+  organizationId String
+  creditMemoId   String
+  saleId         String
+  amount         Decimal  @db.Decimal(14, 4)
+  appliedAt      DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  creditMemo   CreditMemo   @relation(fields: [creditMemoId], references: [id], onDelete: Cascade)
+  sale         Sale         @relation(fields: [saleId], references: [id])
+
+  @@index([creditMemoId])
+  @@index([organizationId, saleId])
+  @@map("credit_memo_application")
+}
+
+/// Atomic document numbering. Incremented with SELECT … FOR UPDATE inside the
+/// writing transaction, so two runners can never mint the same receipt number.
+model DocumentSequence {
+  id             String   @id @default(cuid())
+  organizationId String
+  docType        String
+  prefix         String   @default("")
+  nextNumber     Int      @default(1)
+  padTo          Int      @default(5)
+  updatedAt      DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, docType])
+  @@map("document_sequence")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Imports
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum ImportType {
+  PRODUCTS
+  CUSTOMERS
+}
+
+enum ImportStatus {
+  UPLOADED
+  MAPPING
+  VALIDATING
+  PREVIEW
+  IMPORTING
+  COMPLETED
+  CANCELLED
+  FAILED
+}
+
+enum ImportMode {
+  CREATE_ONLY
+  UPDATE_ONLY
+  UPSERT
+}
+
+enum ImportMatchKey {
+  SKU
+  UPC
+  ACCOUNT_NUMBER
+  NAME
+}
+
+model ImportJob {
+  id             String         @id @default(cuid())
+  organizationId String
+  type           ImportType
+  fileName       String
+  fileSize       Int
+  storagePath    String?
+  status         ImportStatus   @default(UPLOADED)
+  mode           ImportMode     @default(UPSERT)
+  matchKey       ImportMatchKey @default(SKU)
+
+  /// { snackloadField: incomingHeader } chosen by the user in the mapping step.
+  columnMapJson    Json @default("{}")
+  /// Resolutions for ambiguous references (route names, runner names).
+  referenceMapJson Json @default("{}")
+
+  totalRows    Int @default(0)
+  readyRows    Int @default(0)
+  warningRows  Int @default(0)
+  errorRows    Int @default(0)
+  importedRows Int @default(0)
+  skippedRows  Int @default(0)
+
+  createdByUserId String?
+  startedAt       DateTime?
+  completedAt     DateTime?
+  summaryJson     Json      @default("{}")
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  createdBy    User?        @relation("ImportCreator", fields: [createdByUserId], references: [id])
+  rows         ImportRow[]
+
+  @@index([organizationId, type, createdAt])
+  @@map("import_job")
+}
+
+enum ImportRowStatus {
+  PENDING
+  READY
+  WARNING
+  ERROR
+  IMPORTED
+  SKIPPED
+}
+
+enum ImportRowAction {
+  CREATE
+  UPDATE
+  SKIP
+}
+
+/// Rows persist after the job completes, so "where did this price come from"
+/// stays answerable months later.
+model ImportRow {
+  id             String          @id @default(cuid())
+  organizationId String
+  importJobId    String
+  rowNumber      Int
+  rawJson        Json
+  normalizedJson Json            @default("{}")
+  status         ImportRowStatus @default(PENDING)
+  action         ImportRowAction @default(CREATE)
+  messagesJson   Json            @default("[]")
+  targetType     String?
+  targetId       String?
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  importJob    ImportJob    @relation(fields: [importJobId], references: [id], onDelete: Cascade)
+
+  @@unique([importJobId, rowNumber])
+  @@index([importJobId, status])
+  @@map("import_row")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Integrations (QuickBooks Online first; the layer is provider-agnostic)
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum IntegrationProvider {
+  QUICKBOOKS_ONLINE
+}
+
+enum IntegrationStatus {
+  CONNECTED
+  DISCONNECTED
+  EXPIRED
+  ERROR
+}
+
+model IntegrationConnection {
+  id             String              @id @default(cuid())
+  organizationId String
+  provider       IntegrationProvider
+  status         IntegrationStatus   @default(DISCONNECTED)
+  realmId        String?
+  companyName    String?
+
+  /// AES-256-GCM sealed as v1:iv:tag:ciphertext. Decrypted only inside the
+  /// integration service; never logged, never returned by any API (docs/04 §7).
+  accessTokenEncrypted  String?
+  refreshTokenEncrypted String?
+  tokenExpiresAt        DateTime?
+  refreshExpiresAt      DateTime?
+
+  connectedByUserId String?
+  connectedAt       DateTime?
+  lastSyncAt        DateTime?
+  settingsJson      Json      @default("{}")
+  lastError         String?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  connectedBy  User?        @relation("IntegrationConnector", fields: [connectedByUserId], references: [id])
+
+  @@unique([organizationId, provider])
+  @@map("integration_connection")
+}
+
+/// Durable identity across systems. This table is why we never re-match on name.
+model ExternalMapping {
+  id                String              @id @default(cuid())
+  organizationId    String
+  provider          IntegrationProvider
+  entityType        String
+  localId           String
+  externalId        String
+  externalSyncToken String?
+  lastSyncedAt      DateTime?
+  createdAt         DateTime            @default(now())
+  updatedAt         DateTime            @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, provider, entityType, localId])
+  @@unique([organizationId, provider, entityType, externalId])
+  @@map("external_mapping")
+}
+
+enum SyncStatus {
+  PENDING
+  IN_PROGRESS
+  SYNCED
+  FAILED
+  RETRYING
+  NEEDS_ATTENTION
+}
+
+model SyncJob {
+  id             String              @id @default(cuid())
+  organizationId String
+  provider       IntegrationProvider
+  entityType     String
+  localId        String
+  operation      String
+  status         SyncStatus          @default(PENDING)
+  attempts       Int                 @default(0)
+  nextAttemptAt  DateTime            @default(now())
+  lastError      String?
+  payloadJson    Json                @default("{}")
+  createdAt      DateTime            @default(now())
+  completedAt    DateTime?
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  logs         SyncLog[]
+
+  @@index([status, nextAttemptAt])
+  @@index([organizationId, entityType, localId])
+  @@map("sync_job")
+}
+
+model SyncLog {
+  id             String   @id @default(cuid())
+  organizationId String
+  syncJobId      String
+  attempt        Int
+  level          String
+  message        String
+  requestJson    Json?
+  responseJson   Json?
+  createdAt      DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  syncJob      SyncJob      @relation(fields: [syncJobId], references: [id], onDelete: Cascade)
+
+  @@index([syncJobId])
+  @@map("sync_log")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Operations
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum OutboxStatus {
+  PENDING
+  PROCESSING
+  PROCESSED
+  FAILED
+}
+
+/// Written in the same transaction as the business change it describes, so an
+/// event can never be lost when the write succeeds.
+model OutboxEvent {
+  id             String       @id @default(cuid())
+  organizationId String
+  type           String
+  payloadJson    Json
+  status         OutboxStatus @default(PENDING)
+  attempts       Int          @default(0)
+  availableAt    DateTime     @default(now())
+  lastError      String?
+  createdAt      DateTime     @default(now())
+  processedAt    DateTime?
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([status, availableAt])
+  @@map("outbox_event")
+}
+
+enum NotificationSeverity {
+  INFO
+  WARNING
+  CRITICAL
+}
+
+model Notification {
+  id             String               @id @default(cuid())
+  organizationId String
+  userId         String?
+  type           String
+  severity       NotificationSeverity @default(INFO)
+  title          String
+  body           String?
+  dataJson       Json                 @default("{}")
+  readAt         DateTime?
+  createdAt      DateTime             @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User?        @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, userId, readAt])
+  @@map("notification")
+}
+
+/// Written inside the same transaction as the change, so an audit entry cannot
+/// go missing when a write succeeds.
+model AuditLog {
+  id             String   @id @default(cuid())
+  organizationId String
+  userId         String?
+  action         String
+  entityType     String
+  entityId       String
+  beforeJson     Json?
+  afterJson      Json?
+  ipAddress      String?
+  userAgent      String?
+  createdAt      DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User?        @relation(fields: [userId], references: [id])
+
+  @@index([organizationId, entityType, entityId, createdAt])
+  @@index([organizationId, createdAt])
+  @@map("audit_log")
+}

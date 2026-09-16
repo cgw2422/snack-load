@@ -1,3 +1,9 @@
 ignoredBuiltDependencies:
   - sharp
   - unrs-resolver
+onlyBuiltDependencies:
+  - esbuild
+  - msgpackr-extract
+  - workerd
+  - '@prisma/client'
+  - prisma

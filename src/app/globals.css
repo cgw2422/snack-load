@@ -1,26 +1,176 @@
-@import "tailwindcss";
+@import 'tailwindcss';
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
+/*
+ * SnackLoad design tokens.
+ *
+ * Navy carries the brand, orange marks motion and the primary action, green is
+ * reserved for money that arrived. Deliberately B2B logistics software — bold,
+ * not a children's snack app.
+ */
+@theme {
+  --color-navy-50: #eef4fb;
+  --color-navy-100: #d7e5f5;
+  --color-navy-200: #aec9ea;
+  --color-navy-300: #7ea7db;
+  --color-navy-400: #4a7fc4;
+  --color-navy-500: #2563ac;
+  --color-navy-600: #1d4d8c;
+  --color-navy-700: #163a69;
+  --color-navy-800: #102c53;
+  --color-navy-900: #0b2141;
+  --color-navy-950: #071630;
+
+  --color-flame-50: #fff3ee;
+  --color-flame-100: #ffe1d4;
+  --color-flame-200: #ffc0a8;
+  --color-flame-300: #ff9670;
+  --color-flame-400: #ff6b3d;
+  --color-flame-500: #f04e23;
+  --color-flame-600: #d93b12;
+  --color-flame-700: #b32d0d;
+
+  --color-cash-50: #ecfdf3;
+  --color-cash-100: #d1fadf;
+  --color-cash-400: #34d399;
+  --color-cash-500: #16a34a;
+  --color-cash-600: #15803d;
+  --color-cash-700: #116632;
+
+  --color-alert-400: #fbbf24;
+  --color-alert-500: #d97706;
+  --color-alert-600: #b45309;
+
+  --color-stop-500: #dc2626;
+  --color-stop-600: #b91c1c;
+
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+
+  --radius-card: 1rem;
+
+  /* Reachable-with-a-thumb sizing (docs/05 §1). */
+  --spacing-touch: 2.75rem;      /* 44px — the floor for any tappable thing */
+  --spacing-touch-lg: 3.5rem;    /* 56px — route-runner primary actions */
 }
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+:root {
+  --surface: #ffffff;
+  --surface-sunken: #f5f7fa;
+  --surface-raised: #ffffff;
+  --border: #e3e8ef;
+  --border-strong: #cdd5e0;
+  --text: #0f172a;
+  --text-muted: #5a6779;
+  --text-subtle: #8a95a6;
+  --nav-bg: #ffffff;
+  color-scheme: light;
 }
 
 @media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+  :root:not([data-theme='light']) {
+    --surface: #0a1526;
+    --surface-sunken: #060f1d;
+    --surface-raised: #0f1e33;
+    --border: #1c2d47;
+    --border-strong: #2b4066;
+    --text: #eef3fa;
+    --text-muted: #9aabc2;
+    --text-subtle: #6b7e96;
+    --nav-bg: #0a1526;
+    color-scheme: dark;
   }
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+:root[data-theme='dark'] {
+  --surface: #0a1526;
+  --surface-sunken: #060f1d;
+  --surface-raised: #0f1e33;
+  --border: #1c2d47;
+  --border-strong: #2b4066;
+  --text: #eef3fa;
+  --text-muted: #9aabc2;
+  --text-subtle: #6b7e96;
+  --nav-bg: #0a1526;
+  color-scheme: dark;
+}
+
+@theme inline {
+  --color-surface: var(--surface);
+  --color-surface-sunken: var(--surface-sunken);
+  --color-surface-raised: var(--surface-raised);
+  --color-line: var(--border);
+  --color-line-strong: var(--border-strong);
+  --color-ink: var(--text);
+  --color-ink-muted: var(--text-muted);
+  --color-ink-subtle: var(--text-subtle);
+}
+
+@layer base {
+  * {
+    border-color: var(--border);
+  }
+
+  html {
+    -webkit-text-size-adjust: 100%;
+    /* iOS rubber-banding under a fixed bottom nav looks broken; this stops it. */
+    overscroll-behavior-y: none;
+  }
+
+  body {
+    background: var(--surface-sunken);
+    color: var(--text);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  /* A phone keyboard must never zoom the viewport on focus: 16px is the threshold. */
+  input,
+  select,
+  textarea {
+    font-size: 16px;
+  }
+
+  /* Tabular figures keep money columns from dancing as values change. */
+  .tnum {
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: 'tnum';
+  }
+
+  ::selection {
+    background: var(--color-navy-200);
+    color: var(--color-navy-950);
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-flame-500);
+    outline-offset: 2px;
+  }
+}
+
+@layer utilities {
+  .safe-bottom {
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+  .safe-top {
+    padding-top: env(safe-area-inset-top, 0px);
+  }
+  /* Content must clear the fixed bottom nav plus the home indicator. */
+  .pb-nav {
+    padding-bottom: calc(5.5rem + env(safe-area-inset-bottom, 0px));
+  }
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+  .no-scrollbar {
+    scrollbar-width: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
 }

@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 560 120" role="img" aria-label="SnackLoad">
+  <g fill="#f04e23">
+    <rect x="0" y="34" width="44" height="11" rx="5.5"/>
+    <rect x="0" y="54" width="62" height="11" rx="5.5"/>
+    <rect x="0" y="74" width="38" height="11" rx="5.5"/>
+  </g>
+  <g fill="#0b2141">
+    <path d="M78 26h68a8 8 0 0 1 8 8v56H78a8 8 0 0 1-8-8V34a8 8 0 0 1 8-8z"/>
+    <path d="M166 46h22a11 11 0 0 1 8.8 4.4l15 20a11 11 0 0 1 2.2 6.6V82a8 8 0 0 1-8 8h-40V46z"/>
+  </g>
+  <g fill="#ffffff"><circle cx="102" cy="90" r="9"/><circle cx="180" cy="90" r="9"/></g>
+  <g fill="#0b2141"><circle cx="102" cy="90" r="18" fill="#0b2141"/><circle cx="180" cy="90" r="18"/></g>
+  <g fill="#ffffff"><circle cx="102" cy="90" r="8"/><circle cx="180" cy="90" r="8"/></g>
+  <text x="240" y="78" font-family="ui-sans-serif,system-ui,sans-serif" font-size="58" font-weight="800" letter-spacing="-1.5">
+    <tspan fill="#0b2141">Snack</tspan><tspan fill="#f04e23">Load</tspan>
+  </text>
+</svg>
