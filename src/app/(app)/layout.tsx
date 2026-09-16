@@ -1,4 +1,3 @@
-import type { ReactNode } from 'react'
 import { redirect } from 'next/navigation'
 import { getAuthContext } from '@/server/auth/context'
 import { db } from '@/server/db/tenant'
