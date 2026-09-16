@@ -78,14 +78,14 @@ export const MORE_NAV: NavItem[] = [
     href: '/suppliers',
     label: 'Suppliers',
     icon: 'factory',
-    anyOf: ['product:read'],
+    anyOf: ['inventory:receive', 'product:create'],
     description: 'Who you buy from',
   },
   {
     href: '/settings',
     label: 'Settings',
     icon: 'settings',
-    anyOf: ['org:read'],
+    anyOf: ['org:update'],
     description: 'Company, integrations and preferences',
   },
 ]
@@ -108,7 +108,12 @@ export const DESKTOP_NAV: { heading: string; items: NavItem[] }[] = [
       { href: '/customers', label: 'Customers', icon: 'store', anyOf: ['customer:read'] },
       { href: '/receipts', label: 'Receipts', icon: 'receipt', anyOf: ['receipt:read'] },
       { href: '/receivables', label: 'Receivables', icon: 'wallet', anyOf: ['payment:read'] },
-      { href: '/suppliers', label: 'Suppliers', icon: 'factory', anyOf: ['product:read'] },
+      {
+        href: '/suppliers',
+        label: 'Suppliers',
+        icon: 'factory',
+        anyOf: ['inventory:receive', 'product:create'],
+      },
     ],
   },
   {
@@ -119,7 +124,7 @@ export const DESKTOP_NAV: { heading: string; items: NavItem[] }[] = [
     heading: 'Company',
     items: [
       { href: '/team', label: 'Team', icon: 'users', anyOf: ['user:read'] },
-      { href: '/settings', label: 'Settings', icon: 'settings', anyOf: ['org:read'] },
+      { href: '/settings', label: 'Settings', icon: 'settings', anyOf: ['org:update'] },
     ],
   },
 ]

@@ -12,11 +12,19 @@ const TONES: Record<Metric['tone'], string> = {
 /** Money tiles are formatted here; the service hands over exact decimal strings. */
 const MONEY_KEYS = new Set(['sales-today', 'receivables', 'inventory-value'])
 
-export function MetricTileCard({ metric, currency }: { metric: Metric; currency: string }) {
+export function MetricTileCard({
+  metric,
+  currency,
+  className,
+}: {
+  metric: Metric
+  currency: string
+  className?: string
+}) {
   const display = MONEY_KEYS.has(metric.key) ? formatMoney(metric.value, currency) : metric.value
 
   return (
-    <div className={cn('rounded-card px-3.5 py-3', TONES[metric.tone])}>
+    <div className={cn('rounded-card px-3.5 py-3', TONES[metric.tone], className)}>
       <p className="text-[11px] font-bold uppercase tracking-wide opacity-75">{metric.label}</p>
       <p className="tnum mt-1 text-xl font-extrabold leading-tight sm:text-2xl">{display}</p>
       {metric.detail ? (

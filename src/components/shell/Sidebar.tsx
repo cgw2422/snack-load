@@ -26,7 +26,7 @@ export function Sidebar({
         </Link>
       </div>
 
-      <nav aria-label="Primary" className="flex-1 space-y-6 overflow-y-auto px-3 pb-6">
+      <nav aria-label="Sections" className="flex-1 space-y-6 overflow-y-auto px-3 pb-6">
         {groups.map((group) => (
           <div key={group.heading}>
             <p className="px-3 pb-1.5 text-[11px] font-bold uppercase tracking-wider text-ink-subtle">

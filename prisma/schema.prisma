@@ -30,29 +30,29 @@ model Organization {
   id            String             @id @default(cuid())
   name          String
   slug          String             @unique
-  legalName     String?
+  legalName     String?            @map("legal_name")
   email         String?
   phone         String?
-  addressLine1  String?
-  addressLine2  String?
+  addressLine1  String?            @map("address_line1")
+  addressLine2  String?            @map("address_line2")
   city          String?
   state         String?
-  postalCode    String?
+  postalCode    String?            @map("postal_code")
   country       String             @default("US")
   timezone      String             @default("America/New_York")
   currency      String             @default("USD")
-  logoUrl       String?
-  receiptFooter String?
+  logoUrl       String?            @map("logo_url")
+  receiptFooter String?            @map("receipt_footer")
   status        OrganizationStatus @default(ACTIVE)
   plan          String             @default("standard")
 
   /// Per-org behaviour switches (see docs/02 §L4). Shape: OrganizationSettings.
   settings       Json @default("{}")
   /// Completion state of the onboarding checklist (spec §49).
-  onboardingJson Json @default("{}")
+  onboardingJson Json @default("{}") @map("onboarding_json")
 
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
 
   memberships            Membership[]
   roles                  Role[]
@@ -118,18 +118,18 @@ enum UserStatus {
 model User {
   id               String     @id @default(cuid())
   email            String     @unique
-  passwordHash     String
-  passwordAlgo     String     @default("scrypt")
-  firstName        String
-  lastName         String
+  passwordHash     String     @map("password_hash")
+  passwordAlgo     String     @default("scrypt") @map("password_algo")
+  firstName        String     @map("first_name")
+  lastName         String     @map("last_name")
   phone            String?
-  avatarUrl        String?
+  avatarUrl        String?    @map("avatar_url")
   status           UserStatus @default(ACTIVE)
-  lastLoginAt      DateTime?
-  failedLoginCount Int        @default(0)
-  lockedUntil      DateTime?
-  createdAt        DateTime   @default(now())
-  updatedAt        DateTime   @updatedAt
+  lastLoginAt      DateTime?  @map("last_login_at")
+  failedLoginCount Int        @default(0) @map("failed_login_count")
+  lockedUntil      DateTime?  @map("locked_until")
+  createdAt        DateTime   @default(now()) @map("created_at")
+  updatedAt        DateTime   @updatedAt @map("updated_at")
 
   memberships           Membership[]
   sessions              Session[]
@@ -169,17 +169,17 @@ enum MembershipStatus {
 
 model Membership {
   id               String           @id @default(cuid())
-  organizationId   String
-  userId           String
-  roleId           String
+  organizationId   String           @map("organization_id")
+  userId           String           @map("user_id")
+  roleId           String           @map("role_id")
   status           MembershipStatus @default(ACTIVE)
-  employeeCode     String?
+  employeeCode     String?          @map("employee_code")
   /// Truck this person normally drives; the default selling location for their sales.
-  defaultVehicleId String?
-  joinedAt         DateTime         @default(now())
-  removedAt        DateTime?
-  createdAt        DateTime         @default(now())
-  updatedAt        DateTime         @updatedAt
+  defaultVehicleId String?          @map("default_vehicle_id")
+  joinedAt         DateTime         @default(now()) @map("joined_at")
+  removedAt        DateTime?        @map("removed_at")
+  createdAt        DateTime         @default(now()) @map("created_at")
+  updatedAt        DateTime         @updatedAt @map("updated_at")
 
   organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -196,13 +196,13 @@ model Membership {
 /// are an INSERT, not a deploy. Nothing in the codebase branches on role.key.
 model Role {
   id             String   @id @default(cuid())
-  organizationId String
+  organizationId String   @map("organization_id")
   key            String
   name           String
   description    String?
-  isSystem       Boolean  @default(false)
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  isSystem       Boolean  @default(false) @map("is_system")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
 
   organization Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   permissions  RolePermission[]
@@ -216,7 +216,7 @@ model Role {
 
 model RolePermission {
   id         String @id @default(cuid())
-  roleId     String
+  roleId     String @map("role_id")
   permission String
 
   role Role @relation(fields: [roleId], references: [id], onDelete: Cascade)
@@ -228,16 +228,16 @@ model RolePermission {
 
 model Invitation {
   id               String    @id @default(cuid())
-  organizationId   String
+  organizationId   String    @map("organization_id")
   email            String
-  roleId           String
-  tokenHash        String    @unique
-  invitedByUserId  String
-  expiresAt        DateTime
-  acceptedAt       DateTime?
-  acceptedByUserId String?
-  revokedAt        DateTime?
-  createdAt        DateTime  @default(now())
+  roleId           String    @map("role_id")
+  tokenHash        String    @unique @map("token_hash")
+  invitedByUserId  String    @map("invited_by_user_id")
+  expiresAt        DateTime  @map("expires_at")
+  acceptedAt       DateTime? @map("accepted_at")
+  acceptedByUserId String?   @map("accepted_by_user_id")
+  revokedAt        DateTime? @map("revoked_at")
+  createdAt        DateTime  @default(now()) @map("created_at")
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   role         Role         @relation(fields: [roleId], references: [id])
@@ -258,16 +258,16 @@ enum SessionClient {
 /// carriers of the same credential (docs/04 §2).
 model Session {
   id             String        @id @default(cuid())
-  userId         String
-  organizationId String
-  tokenHash      String        @unique
+  userId         String        @map("user_id")
+  organizationId String        @map("organization_id")
+  tokenHash      String        @unique @map("token_hash")
   client         SessionClient @default(WEB)
-  userAgent      String?
-  ipAddress      String?
-  expiresAt      DateTime
-  lastUsedAt     DateTime      @default(now())
-  revokedAt      DateTime?
-  createdAt      DateTime      @default(now())
+  userAgent      String?       @map("user_agent")
+  ipAddress      String?       @map("ip_address")
+  expiresAt      DateTime      @map("expires_at")
+  lastUsedAt     DateTime      @default(now()) @map("last_used_at")
+  revokedAt      DateTime?     @map("revoked_at")
+  createdAt      DateTime      @default(now()) @map("created_at")
 
   user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
@@ -283,21 +283,21 @@ model Session {
 
 model Supplier {
   id             String   @id @default(cuid())
-  organizationId String
+  organizationId String   @map("organization_id")
   name           String
-  accountNumber  String?
-  contactName    String?
+  accountNumber  String?  @map("account_number")
+  contactName    String?  @map("contact_name")
   phone          String?
   email          String?
-  addressLine1   String?
+  addressLine1   String?  @map("address_line1")
   city           String?
   state          String?
-  postalCode     String?
-  leadTimeDays   Int?
+  postalCode     String?  @map("postal_code")
+  leadTimeDays   Int?     @map("lead_time_days")
   active         Boolean  @default(true)
   notes          String?
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   products     Product[]
@@ -310,13 +310,13 @@ model Supplier {
 
 model ProductCategory {
   id             String   @id @default(cuid())
-  organizationId String
+  organizationId String   @map("organization_id")
   name           String
-  parentId       String?
-  sortOrder      Int      @default(0)
+  parentId       String?  @map("parent_id")
+  sortOrder      Int      @default(0) @map("sort_order")
   active         Boolean  @default(true)
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
 
   organization Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   parent       ProductCategory?  @relation("CategoryTree", fields: [parentId], references: [id])
@@ -330,31 +330,31 @@ model ProductCategory {
 
 model Product {
   id             String  @id @default(cuid())
-  organizationId String
+  organizationId String  @map("organization_id")
   sku            String
   upc            String?
   name           String
   description    String?
   brand          String?
-  categoryId     String?
-  supplierId     String?
+  categoryId     String? @map("category_id")
+  supplierId     String? @map("supplier_id")
 
   /// Label for the atom this product is counted in (BAG, BOTTLE, CAN, BAR…).
   /// Every stored quantity in the system is an integer count of these.
-  baseUomLabel String @default("Each")
+  baseUomLabel String @default("Each") @map("base_uom_label")
 
   /// Weighted-average acquisition cost of ONE base unit. Six decimals because
   /// a case cost divided by a case factor is rarely exact (docs/02 §M1).
-  costPerBaseUnit Decimal @default(0) @db.Decimal(16, 6)
+  costPerBaseUnit Decimal @default(0) @map("cost_per_base_unit") @db.Decimal(16, 6)
 
-  reorderPointBaseUnits Int      @default(0)
+  reorderPointBaseUnits Int      @default(0) @map("reorder_point_base_units")
   taxable               Boolean  @default(true)
   active                Boolean  @default(true)
-  imageUrl              String?
-  weightGrams           Int?
+  imageUrl              String?  @map("image_url")
+  weightGrams           Int?     @map("weight_grams")
   notes                 String?
-  createdAt             DateTime @default(now())
-  updatedAt             DateTime @updatedAt
+  createdAt             DateTime @default(now()) @map("created_at")
+  updatedAt             DateTime @updatedAt @map("updated_at")
 
   organization     Organization               @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   category         ProductCategory?           @relation(fields: [categoryId], references: [id])
@@ -392,17 +392,17 @@ enum UomCode {
 /// Case price is NOT required to equal unit price × factor (docs/02 §Q4).
 model ProductUom {
   id               String  @id @default(cuid())
-  organizationId   String
-  productId        String
+  organizationId   String  @map("organization_id")
+  productId        String  @map("product_id")
   code             UomCode
   label            String
   /// How many base units one of these contains. Must be > 0.
-  baseUnitsPerUom  Int
+  baseUnitsPerUom  Int     @map("base_units_per_uom")
   price            Decimal @default(0) @db.Decimal(12, 4)
   barcode          String?
-  isBase           Boolean @default(false)
-  isDefaultSaleUom Boolean @default(false)
-  sortOrder        Int     @default(0)
+  isBase           Boolean @default(false) @map("is_base")
+  isDefaultSaleUom Boolean @default(false) @map("is_default_sale_uom")
+  sortOrder        Int     @default(0) @map("sort_order")
   active           Boolean @default(true)
 
   organization     Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
@@ -421,11 +421,11 @@ model ProductUom {
 
 model TaxRate {
   id             String  @id @default(cuid())
-  organizationId String
+  organizationId String  @map("organization_id")
   name           String
   /// e.g. 0.072500 for 7.25%
   rate           Decimal @db.Decimal(9, 6)
-  isDefault      Boolean @default(false)
+  isDefault      Boolean @default(false) @map("is_default")
   active         Boolean @default(true)
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
@@ -437,12 +437,12 @@ model TaxRate {
 
 model PriceGroup {
   id             String   @id @default(cuid())
-  organizationId String
+  organizationId String   @map("organization_id")
   name           String
   description    String?
   active         Boolean  @default(true)
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
 
   organization Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   prices       PriceGroupPrice[]
@@ -454,13 +454,13 @@ model PriceGroup {
 
 model PriceGroupPrice {
   id             String    @id @default(cuid())
-  organizationId String
-  priceGroupId   String
-  productId      String
-  productUomId   String?
+  organizationId String    @map("organization_id")
+  priceGroupId   String    @map("price_group_id")
+  productId      String    @map("product_id")
+  productUomId   String?   @map("product_uom_id")
   price          Decimal   @db.Decimal(12, 4)
-  effectiveFrom  DateTime  @default(now())
-  effectiveTo    DateTime?
+  effectiveFrom  DateTime  @default(now()) @map("effective_from")
+  effectiveTo    DateTime? @map("effective_to")
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   priceGroup   PriceGroup   @relation(fields: [priceGroupId], references: [id], onDelete: Cascade)
@@ -473,13 +473,13 @@ model PriceGroupPrice {
 
 model CustomerPrice {
   id             String    @id @default(cuid())
-  organizationId String
-  customerId     String
-  productId      String
-  productUomId   String?
+  organizationId String    @map("organization_id")
+  customerId     String    @map("customer_id")
+  productId      String    @map("product_id")
+  productUomId   String?   @map("product_uom_id")
   price          Decimal   @db.Decimal(12, 4)
-  effectiveFrom  DateTime  @default(now())
-  effectiveTo    DateTime?
+  effectiveFrom  DateTime  @default(now()) @map("effective_from")
+  effectiveTo    DateTime? @map("effective_to")
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   customer     Customer     @relation(fields: [customerId], references: [id], onDelete: Cascade)
@@ -504,38 +504,38 @@ enum PaymentTerms {
 
 model Customer {
   id             String   @id @default(cuid())
-  organizationId String
-  accountNumber  String
+  organizationId String   @map("organization_id")
+  accountNumber  String   @map("account_number")
   name           String
-  parentCompany  String?
-  addressLine1   String?
-  addressLine2   String?
+  parentCompany  String?  @map("parent_company")
+  addressLine1   String?  @map("address_line1")
+  addressLine2   String?  @map("address_line2")
   city           String?
   state          String?
-  postalCode     String?
+  postalCode     String?  @map("postal_code")
   latitude       Decimal? @db.Decimal(9, 6)
   longitude      Decimal? @db.Decimal(9, 6)
   phone          String?
   email          String?
 
-  priceGroupId     String?
-  paymentTermsCode PaymentTerms @default(COD)
-  creditLimit      Decimal?     @db.Decimal(14, 4)
-  taxExempt        Boolean      @default(false)
-  taxExemptId      String?
-  taxRateId        String?
+  priceGroupId     String?      @map("price_group_id")
+  paymentTermsCode PaymentTerms @default(COD) @map("payment_terms_code")
+  creditLimit      Decimal?     @map("credit_limit") @db.Decimal(14, 4)
+  taxExempt        Boolean      @default(false) @map("tax_exempt")
+  taxExemptId      String?      @map("tax_exempt_id")
+  taxRateId        String?      @map("tax_rate_id")
 
   /// Cache of open AR. Source of truth is the sum of open sale balances less
   /// unapplied payments and open credits; recomputable (docs/02 §A2).
   balance Decimal @default(0) @db.Decimal(14, 4)
 
-  deliveryInstructions String?
+  deliveryInstructions String?   @map("delivery_instructions")
   notes                String?
   active               Boolean   @default(true)
-  lastVisitAt          DateTime?
-  nextDueOn            DateTime? @db.Date
-  createdAt            DateTime  @default(now())
-  updatedAt            DateTime  @updatedAt
+  lastVisitAt          DateTime? @map("last_visit_at")
+  nextDueOn            DateTime? @map("next_due_on") @db.Date
+  createdAt            DateTime  @default(now()) @map("created_at")
+  updatedAt            DateTime  @updatedAt @map("updated_at")
 
   organization Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   priceGroup   PriceGroup?        @relation(fields: [priceGroupId], references: [id])
@@ -557,13 +557,13 @@ model Customer {
 
 model CustomerContact {
   id             String  @id @default(cuid())
-  organizationId String
-  customerId     String
+  organizationId String  @map("organization_id")
+  customerId     String  @map("customer_id")
   name           String
   title          String?
   phone          String?
   email          String?
-  isPrimary      Boolean @default(false)
+  isPrimary      Boolean @default(false) @map("is_primary")
   notes          String?
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
@@ -587,12 +587,12 @@ enum InventoryLocationKind {
 
 model InventoryLocation {
   id             String                @id @default(cuid())
-  organizationId String
+  organizationId String                @map("organization_id")
   kind           InventoryLocationKind
   name           String
   code           String?
   active         Boolean               @default(true)
-  createdAt      DateTime              @default(now())
+  createdAt      DateTime              @default(now()) @map("created_at")
 
   organization Organization               @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   warehouse    Warehouse?
@@ -607,16 +607,16 @@ model InventoryLocation {
 
 model Warehouse {
   id             String   @id @default(cuid())
-  organizationId String
-  locationId     String   @unique
-  addressLine1   String?
+  organizationId String   @map("organization_id")
+  locationId     String   @unique @map("location_id")
+  addressLine1   String?  @map("address_line1")
   city           String?
   state          String?
-  postalCode     String?
-  isPrimary      Boolean  @default(false)
+  postalCode     String?  @map("postal_code")
+  isPrimary      Boolean  @default(false) @map("is_primary")
   notes          String?
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
 
   organization Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   location     InventoryLocation @relation(fields: [locationId], references: [id], onDelete: Cascade)
@@ -627,16 +627,16 @@ model Warehouse {
 
 model Vehicle {
   id             String   @id @default(cuid())
-  organizationId String
-  locationId     String   @unique
+  organizationId String   @map("organization_id")
+  locationId     String   @unique @map("location_id")
   name           String
-  truckNumber    String
-  licensePlate   String?
-  assignedUserId String?
+  truckNumber    String   @map("truck_number")
+  licensePlate   String?  @map("license_plate")
+  assignedUserId String?  @map("assigned_user_id")
   active         Boolean  @default(true)
   notes          String?
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
 
   organization   Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   location       InventoryLocation @relation(fields: [locationId], references: [id], onDelete: Cascade)
@@ -655,14 +655,14 @@ model Vehicle {
 /// lock. SUM(ledger) must equal this for every pair (docs/02 §L6).
 model InventoryBalance {
   id             String   @id @default(cuid())
-  organizationId String
-  locationId     String
-  productId      String
+  organizationId String   @map("organization_id")
+  locationId     String   @map("location_id")
+  productId      String   @map("product_id")
   /// Signed integer count of base units.
   quantity       Int      @default(0)
   /// Moving-average cost of one base unit at this location.
-  avgUnitCost    Decimal  @default(0) @db.Decimal(16, 6)
-  updatedAt      DateTime @updatedAt
+  avgUnitCost    Decimal  @default(0) @map("avg_unit_cost") @db.Decimal(16, 6)
+  updatedAt      DateTime @updatedAt @map("updated_at")
 
   organization Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   location     InventoryLocation @relation(fields: [locationId], references: [id], onDelete: Cascade)
@@ -693,17 +693,17 @@ enum InventoryTransactionType {
 /// a CORRECTION or a REVERSAL that points back via reversalOfId (docs/02 §L1).
 model InventoryTransaction {
   id              String                   @id @default(cuid())
-  organizationId  String
+  organizationId  String                   @map("organization_id")
   type            InventoryTransactionType
-  occurredAt      DateTime                 @default(now())
-  createdByUserId String?
-  referenceType   String?
-  referenceId     String?
-  reasonCode      String?
+  occurredAt      DateTime                 @default(now()) @map("occurred_at")
+  createdByUserId String?                  @map("created_by_user_id")
+  referenceType   String?                  @map("reference_type")
+  referenceId     String?                  @map("reference_id")
+  reasonCode      String?                  @map("reason_code")
   notes           String?
-  idempotencyKey  String?
-  reversalOfId    String?
-  createdAt       DateTime                 @default(now())
+  idempotencyKey  String?                  @map("idempotency_key")
+  reversalOfId    String?                  @map("reversal_of_id")
+  createdAt       DateTime                 @default(now()) @map("created_at")
 
   organization Organization               @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   createdBy    User?                      @relation("InventoryTransactionActor", fields: [createdByUserId], references: [id])
@@ -723,15 +723,15 @@ model InventoryTransaction {
 
 model InventoryTransactionLine {
   id             String  @id @default(cuid())
-  organizationId String
-  transactionId  String
-  productId      String
-  locationId     String
+  organizationId String  @map("organization_id")
+  transactionId  String  @map("transaction_id")
+  productId      String  @map("product_id")
+  locationId     String  @map("location_id")
   /// Signed base units. For TRANSFER/TRUCK_LOAD/TRUCK_UNLOAD these must sum to
   /// zero per product across the transaction (docs/02 §L2).
-  quantityDelta  Int
-  unitCost       Decimal @db.Decimal(16, 6)
-  balanceAfter   Int
+  quantityDelta  Int     @map("quantity_delta")
+  unitCost       Decimal @map("unit_cost") @db.Decimal(16, 6)
+  balanceAfter   Int     @map("balance_after")
   notes          String?
 
   organization Organization         @relation(fields: [organizationId], references: [id], onDelete: Cascade)
@@ -746,16 +746,16 @@ model InventoryTransactionLine {
 
 model Receiving {
   id                     String   @id @default(cuid())
-  organizationId         String
-  supplierId             String?
-  warehouseLocationId    String
-  referenceNumber        String?
-  receivedAt             DateTime @default(now())
-  receivedByUserId       String?
+  organizationId         String   @map("organization_id")
+  supplierId             String?  @map("supplier_id")
+  warehouseLocationId    String   @map("warehouse_location_id")
+  referenceNumber        String?  @map("reference_number")
+  receivedAt             DateTime @default(now()) @map("received_at")
+  receivedByUserId       String?  @map("received_by_user_id")
   notes                  String?
-  inventoryTransactionId String?  @unique
-  idempotencyKey         String?
-  createdAt              DateTime @default(now())
+  inventoryTransactionId String?  @unique @map("inventory_transaction_id")
+  idempotencyKey         String?  @map("idempotency_key")
+  createdAt              DateTime @default(now()) @map("created_at")
 
   organization Organization          @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   supplier     Supplier?             @relation(fields: [supplierId], references: [id])
@@ -771,14 +771,14 @@ model Receiving {
 
 model ReceivingItem {
   id             String  @id @default(cuid())
-  organizationId String
-  receivingId    String
-  productId      String
-  productUomId   String
+  organizationId String  @map("organization_id")
+  receivingId    String  @map("receiving_id")
+  productId      String  @map("product_id")
+  productUomId   String  @map("product_uom_id")
   quantity       Int
-  baseQuantity   Int
-  unitCost       Decimal @db.Decimal(16, 6)
-  lineCost       Decimal @db.Decimal(14, 4)
+  baseQuantity   Int     @map("base_quantity")
+  unitCost       Decimal @map("unit_cost") @db.Decimal(16, 6)
+  lineCost       Decimal @map("line_cost") @db.Decimal(14, 4)
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   receiving    Receiving    @relation(fields: [receivingId], references: [id], onDelete: Cascade)
@@ -803,20 +803,20 @@ enum TruckLoadStatus {
 /// A draft load holds no stock; confirming it posts the transfer transaction.
 model TruckLoad {
   id                     String             @id @default(cuid())
-  organizationId         String
-  vehicleId              String
-  routeId                String?
-  runnerUserId           String?
+  organizationId         String             @map("organization_id")
+  vehicleId              String             @map("vehicle_id")
+  routeId                String?            @map("route_id")
+  runnerUserId           String?            @map("runner_user_id")
   direction              TruckLoadDirection @default(LOAD)
   status                 TruckLoadStatus    @default(DRAFT)
-  warehouseLocationId    String
-  loadedAt               DateTime?
-  createdByUserId        String?
+  warehouseLocationId    String             @map("warehouse_location_id")
+  loadedAt               DateTime?          @map("loaded_at")
+  createdByUserId        String?            @map("created_by_user_id")
   notes                  String?
-  inventoryTransactionId String?            @unique
-  idempotencyKey         String?
-  createdAt              DateTime           @default(now())
-  updatedAt              DateTime           @updatedAt
+  inventoryTransactionId String?            @unique @map("inventory_transaction_id")
+  idempotencyKey         String?            @map("idempotency_key")
+  createdAt              DateTime           @default(now()) @map("created_at")
+  updatedAt              DateTime           @updatedAt @map("updated_at")
 
   organization Organization          @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   vehicle      Vehicle               @relation(fields: [vehicleId], references: [id])
@@ -833,12 +833,12 @@ model TruckLoad {
 
 model TruckLoadItem {
   id             String @id @default(cuid())
-  organizationId String
-  truckLoadId    String
-  productId      String
-  productUomId   String
+  organizationId String @map("organization_id")
+  truckLoadId    String @map("truck_load_id")
+  productId      String @map("product_id")
+  productUomId   String @map("product_uom_id")
   quantity       Int
-  baseQuantity   Int
+  baseQuantity   Int    @map("base_quantity")
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   truckLoad    TruckLoad    @relation(fields: [truckLoadId], references: [id], onDelete: Cascade)
@@ -873,17 +873,17 @@ enum ScheduleFrequency {
 
 model RouteTemplate {
   id                  String     @id @default(cuid())
-  organizationId      String
+  organizationId      String     @map("organization_id")
   name                String
   code                String?
   color               String?
-  dayOfWeek           DayOfWeek?
-  defaultRunnerUserId String?
-  defaultVehicleId    String?
+  dayOfWeek           DayOfWeek? @map("day_of_week")
+  defaultRunnerUserId String?    @map("default_runner_user_id")
+  defaultVehicleId    String?    @map("default_vehicle_id")
   active              Boolean    @default(true)
   notes               String?
-  createdAt           DateTime   @default(now())
-  updatedAt           DateTime   @updatedAt
+  createdAt           DateTime   @default(now()) @map("created_at")
+  updatedAt           DateTime   @updatedAt @map("updated_at")
 
   organization   Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   defaultRunner  User?              @relation("RouteTemplateDefaultRunner", fields: [defaultRunnerUserId], references: [id])
@@ -900,23 +900,23 @@ model RouteTemplate {
 /// is a query over this table.
 model CustomerSchedule {
   id              String            @id @default(cuid())
-  organizationId  String
-  customerId      String
-  routeTemplateId String
+  organizationId  String            @map("organization_id")
+  customerId      String            @map("customer_id")
+  routeTemplateId String            @map("route_template_id")
   frequency       ScheduleFrequency @default(WEEKLY)
   /// Only for frequency = CUSTOM.
-  intervalDays    Int?
-  dayOfWeek       DayOfWeek
+  intervalDays    Int?              @map("interval_days")
+  dayOfWeek       DayOfWeek         @map("day_of_week")
   /// For BIWEEKLY/TRIWEEKLY: which week of the cycle this account falls in.
-  weekOfCycle     Int?
+  weekOfCycle     Int?              @map("week_of_cycle")
   sequence        Int               @default(0)
-  windowStart     String?
-  windowEnd       String?
+  windowStart     String?           @map("window_start")
+  windowEnd       String?           @map("window_end")
   active          Boolean           @default(true)
-  lastServicedOn  DateTime?         @db.Date
-  nextDueOn       DateTime?         @db.Date
-  createdAt       DateTime          @default(now())
-  updatedAt       DateTime          @updatedAt
+  lastServicedOn  DateTime?         @map("last_serviced_on") @db.Date
+  nextDueOn       DateTime?         @map("next_due_on") @db.Date
+  createdAt       DateTime          @default(now()) @map("created_at")
+  updatedAt       DateTime          @updatedAt @map("updated_at")
 
   organization  Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   customer      Customer      @relation(fields: [customerId], references: [id], onDelete: Cascade)
@@ -937,24 +937,24 @@ enum RouteStatus {
 
 model Route {
   id              String      @id @default(cuid())
-  organizationId  String
-  routeTemplateId String?
-  serviceDate     DateTime    @db.Date
+  organizationId  String      @map("organization_id")
+  routeTemplateId String?     @map("route_template_id")
+  serviceDate     DateTime    @map("service_date") @db.Date
   name            String
-  runnerUserId    String
-  vehicleId       String?
+  runnerUserId    String      @map("runner_user_id")
+  vehicleId       String?     @map("vehicle_id")
   status          RouteStatus @default(PLANNED)
-  startedAt       DateTime?
-  completedAt     DateTime?
-  plannedStops    Int         @default(0)
-  plannedMiles    Decimal?    @db.Decimal(9, 2)
-  plannedMinutes  Int?
-  actualMiles     Decimal?    @db.Decimal(9, 2)
-  startOdometer   Int?
-  endOdometer     Int?
+  startedAt       DateTime?   @map("started_at")
+  completedAt     DateTime?   @map("completed_at")
+  plannedStops    Int         @default(0) @map("planned_stops")
+  plannedMiles    Decimal?    @map("planned_miles") @db.Decimal(9, 2)
+  plannedMinutes  Int?        @map("planned_minutes")
+  actualMiles     Decimal?    @map("actual_miles") @db.Decimal(9, 2)
+  startOdometer   Int?        @map("start_odometer")
+  endOdometer     Int?        @map("end_odometer")
   notes           String?
-  createdAt       DateTime    @default(now())
-  updatedAt       DateTime    @updatedAt
+  createdAt       DateTime    @default(now()) @map("created_at")
+  updatedAt       DateTime    @updatedAt @map("updated_at")
 
   organization      Organization             @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   routeTemplate     RouteTemplate?           @relation(fields: [routeTemplateId], references: [id])
@@ -985,21 +985,21 @@ enum RouteStopStatus {
 
 model RouteStop {
   id                String          @id @default(cuid())
-  organizationId    String
-  routeId           String
-  customerId        String
+  organizationId    String          @map("organization_id")
+  routeId           String          @map("route_id")
+  customerId        String          @map("customer_id")
   sequence          Int
   status            RouteStopStatus @default(PENDING)
-  plannedArrivalAt  DateTime?
-  arrivedAt         DateTime?
-  completedAt       DateTime?
-  distanceMiles     Decimal?        @db.Decimal(9, 2)
-  durationMinutes   Int?
-  outcomeReason     String?
-  rescheduledToDate DateTime?       @db.Date
+  plannedArrivalAt  DateTime?       @map("planned_arrival_at")
+  arrivedAt         DateTime?       @map("arrived_at")
+  completedAt       DateTime?       @map("completed_at")
+  distanceMiles     Decimal?        @map("distance_miles") @db.Decimal(9, 2)
+  durationMinutes   Int?            @map("duration_minutes")
+  outcomeReason     String?         @map("outcome_reason")
+  rescheduledToDate DateTime?       @map("rescheduled_to_date") @db.Date
   notes             String?
-  createdAt         DateTime        @default(now())
-  updatedAt         DateTime        @updatedAt
+  createdAt         DateTime        @default(now()) @map("created_at")
+  updatedAt         DateTime        @updatedAt @map("updated_at")
 
   organization      Organization             @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   route             Route                    @relation(fields: [routeId], references: [id], onDelete: Cascade)
@@ -1019,14 +1019,14 @@ model RouteStop {
 /// rewritten, so "who was supposed to run this" stays answerable.
 model RouteAssignmentHistory {
   id              String   @id @default(cuid())
-  organizationId  String
-  routeId         String
-  routeStopId     String?
-  fromUserId      String?
-  toUserId        String
+  organizationId  String   @map("organization_id")
+  routeId         String   @map("route_id")
+  routeStopId     String?  @map("route_stop_id")
+  fromUserId      String?  @map("from_user_id")
+  toUserId        String   @map("to_user_id")
   reason          String?
-  createdByUserId String?
-  createdAt       DateTime @default(now())
+  createdByUserId String?  @map("created_by_user_id")
+  createdAt       DateTime @default(now()) @map("created_at")
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   route        Route        @relation(fields: [routeId], references: [id], onDelete: Cascade)
@@ -1048,27 +1048,27 @@ enum CloseoutStatus {
 
 model RouteCloseout {
   id                String         @id @default(cuid())
-  organizationId    String
-  routeId           String         @unique
+  organizationId    String         @map("organization_id")
+  routeId           String         @unique @map("route_id")
   status            CloseoutStatus @default(OPEN)
-  submittedAt       DateTime?
-  submittedByUserId String?
-  reviewedAt        DateTime?
-  reviewedByUserId  String?
+  submittedAt       DateTime?      @map("submitted_at")
+  submittedByUserId String?        @map("submitted_by_user_id")
+  reviewedAt        DateTime?      @map("reviewed_at")
+  reviewedByUserId  String?        @map("reviewed_by_user_id")
 
-  salesTotal     Decimal @default(0) @db.Decimal(14, 4)
-  returnsTotal   Decimal @default(0) @db.Decimal(14, 4)
-  expectedCash   Decimal @default(0) @db.Decimal(14, 4)
-  actualCash     Decimal @default(0) @db.Decimal(14, 4)
-  checkTotal     Decimal @default(0) @db.Decimal(14, 4)
-  cardTotal      Decimal @default(0) @db.Decimal(14, 4)
-  achTotal       Decimal @default(0) @db.Decimal(14, 4)
-  onAccountTotal Decimal @default(0) @db.Decimal(14, 4)
-  cashVariance   Decimal @default(0) @db.Decimal(14, 4)
+  salesTotal     Decimal @default(0) @map("sales_total") @db.Decimal(14, 4)
+  returnsTotal   Decimal @default(0) @map("returns_total") @db.Decimal(14, 4)
+  expectedCash   Decimal @default(0) @map("expected_cash") @db.Decimal(14, 4)
+  actualCash     Decimal @default(0) @map("actual_cash") @db.Decimal(14, 4)
+  checkTotal     Decimal @default(0) @map("check_total") @db.Decimal(14, 4)
+  cardTotal      Decimal @default(0) @map("card_total") @db.Decimal(14, 4)
+  achTotal       Decimal @default(0) @map("ach_total") @db.Decimal(14, 4)
+  onAccountTotal Decimal @default(0) @map("on_account_total") @db.Decimal(14, 4)
+  cashVariance   Decimal @default(0) @map("cash_variance") @db.Decimal(14, 4)
 
   notes     String?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
 
   organization Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   route        Route               @relation(fields: [routeId], references: [id], onDelete: Cascade)
@@ -1082,13 +1082,13 @@ model RouteCloseout {
 
 model RouteCloseoutItem {
   id               String  @id @default(cuid())
-  organizationId   String
-  closeoutId       String
-  productId        String
-  expectedQuantity Int
-  countedQuantity  Int?
-  varianceQuantity Int     @default(0)
-  varianceValue    Decimal @default(0) @db.Decimal(14, 4)
+  organizationId   String  @map("organization_id")
+  closeoutId       String  @map("closeout_id")
+  productId        String  @map("product_id")
+  expectedQuantity Int     @map("expected_quantity")
+  countedQuantity  Int?    @map("counted_quantity")
+  varianceQuantity Int     @default(0) @map("variance_quantity")
+  varianceValue    Decimal @default(0) @map("variance_value") @db.Decimal(14, 4)
 
   organization Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   closeout     RouteCloseout @relation(fields: [closeoutId], references: [id], onDelete: Cascade)
@@ -1121,38 +1121,38 @@ enum PriceSource {
 
 model Sale {
   id             String     @id @default(cuid())
-  organizationId String
-  saleNumber     String
-  customerId     String
-  routeId        String?
-  routeStopId    String?
-  soldByUserId   String
+  organizationId String     @map("organization_id")
+  saleNumber     String     @map("sale_number")
+  customerId     String     @map("customer_id")
+  routeId        String?    @map("route_id")
+  routeStopId    String?    @map("route_stop_id")
+  soldByUserId   String     @map("sold_by_user_id")
   status         SaleStatus @default(DRAFT)
-  occurredAt     DateTime   @default(now())
+  occurredAt     DateTime   @default(now()) @map("occurred_at")
 
   subtotal       Decimal @default(0) @db.Decimal(14, 4)
-  discountTotal  Decimal @default(0) @db.Decimal(14, 4)
-  taxTotal       Decimal @default(0) @db.Decimal(14, 4)
+  discountTotal  Decimal @default(0) @map("discount_total") @db.Decimal(14, 4)
+  taxTotal       Decimal @default(0) @map("tax_total") @db.Decimal(14, 4)
   total          Decimal @default(0) @db.Decimal(14, 4)
-  amountPaid     Decimal @default(0) @db.Decimal(14, 4)
-  creditsApplied Decimal @default(0) @db.Decimal(14, 4)
-  balanceDue     Decimal @default(0) @db.Decimal(14, 4)
+  amountPaid     Decimal @default(0) @map("amount_paid") @db.Decimal(14, 4)
+  creditsApplied Decimal @default(0) @map("credits_applied") @db.Decimal(14, 4)
+  balanceDue     Decimal @default(0) @map("balance_due") @db.Decimal(14, 4)
 
-  dueDate          DateTime?    @db.Date
-  paymentTermsCode PaymentTerms @default(COD)
-  taxExempt        Boolean      @default(false)
+  dueDate          DateTime?    @map("due_date") @db.Date
+  paymentTermsCode PaymentTerms @default(COD) @map("payment_terms_code")
+  taxExempt        Boolean      @default(false) @map("tax_exempt")
   notes            String?
 
   /// Minted client-side when the cart is created, so a retry after a timeout in
   /// a dead-zone store cannot bill the store twice (docs/02 §I1).
-  idempotencyKey String
+  idempotencyKey String @map("idempotency_key")
 
-  inventoryTransactionId String?   @unique
-  voidedAt               DateTime?
-  voidedByUserId         String?
-  voidReason             String?
-  createdAt              DateTime  @default(now())
-  updatedAt              DateTime  @updatedAt
+  inventoryTransactionId String?   @unique @map("inventory_transaction_id")
+  voidedAt               DateTime? @map("voided_at")
+  voidedByUserId         String?   @map("voided_by_user_id")
+  voidReason             String?   @map("void_reason")
+  createdAt              DateTime  @default(now()) @map("created_at")
+  updatedAt              DateTime  @updatedAt @map("updated_at")
 
   organization       Organization            @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   customer           Customer                @relation(fields: [customerId], references: [id])
@@ -1179,29 +1179,29 @@ model Sale {
 
 model SaleItem {
   id             String @id @default(cuid())
-  organizationId String
-  saleId         String
-  productId      String
-  productUomId   String
+  organizationId String @map("organization_id")
+  saleId         String @map("sale_id")
+  productId      String @map("product_id")
+  productUomId   String @map("product_uom_id")
 
   /// Snapshots: renaming a product must not rewrite last year's receipts.
-  productNameSnapshot String
-  skuSnapshot         String
-  uomLabelSnapshot    String
+  productNameSnapshot String @map("product_name_snapshot")
+  skuSnapshot         String @map("sku_snapshot")
+  uomLabelSnapshot    String @map("uom_label_snapshot")
 
   quantity     Int
-  baseQuantity Int
+  baseQuantity Int @map("base_quantity")
 
-  unitPrice      Decimal     @db.Decimal(12, 4)
-  lineSubtotal   Decimal     @db.Decimal(14, 4)
-  discountAmount Decimal     @default(0) @db.Decimal(14, 4)
-  taxAmount      Decimal     @default(0) @db.Decimal(14, 4)
-  lineTotal      Decimal     @db.Decimal(14, 4)
+  unitPrice      Decimal     @map("unit_price") @db.Decimal(12, 4)
+  lineSubtotal   Decimal     @map("line_subtotal") @db.Decimal(14, 4)
+  discountAmount Decimal     @default(0) @map("discount_amount") @db.Decimal(14, 4)
+  taxAmount      Decimal     @default(0) @map("tax_amount") @db.Decimal(14, 4)
+  lineTotal      Decimal     @map("line_total") @db.Decimal(14, 4)
   /// COGS is fixed at the moment of sale; later cost changes never restate a
   /// closed month (docs/02 §L5).
-  unitCostAtSale Decimal     @default(0) @db.Decimal(16, 6)
-  priceSource    PriceSource @default(STANDARD)
-  sortOrder      Int         @default(0)
+  unitCostAtSale Decimal     @default(0) @map("unit_cost_at_sale") @db.Decimal(16, 6)
+  priceSource    PriceSource @default(STANDARD) @map("price_source")
+  sortOrder      Int         @default(0) @map("sort_order")
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   sale         Sale         @relation(fields: [saleId], references: [id], onDelete: Cascade)
@@ -1215,15 +1215,15 @@ model SaleItem {
 
 model Receipt {
   id             String    @id @default(cuid())
-  organizationId String
-  saleId         String    @unique
-  receiptNumber  String
-  issuedAt       DateTime  @default(now())
-  signatureId    String?   @unique
-  pdfPath        String?
-  emailedAt      DateTime?
-  textedAt       DateTime?
-  printedAt      DateTime?
+  organizationId String    @map("organization_id")
+  saleId         String    @unique @map("sale_id")
+  receiptNumber  String    @map("receipt_number")
+  issuedAt       DateTime  @default(now()) @map("issued_at")
+  signatureId    String?   @unique @map("signature_id")
+  pdfPath        String?   @map("pdf_path")
+  emailedAt      DateTime? @map("emailed_at")
+  textedAt       DateTime? @map("texted_at")
+  printedAt      DateTime? @map("printed_at")
   version        Int       @default(1)
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
@@ -1236,13 +1236,13 @@ model Receipt {
 
 model Signature {
   id             String   @id @default(cuid())
-  organizationId String
-  saleId         String?  @unique
-  returnId       String?  @unique
-  signerName     String?
-  imagePng       Bytes
-  capturedAt     DateTime @default(now())
-  deviceInfo     String?
+  organizationId String   @map("organization_id")
+  saleId         String?  @unique @map("sale_id")
+  returnId       String?  @unique @map("return_id")
+  signerName     String?  @map("signer_name")
+  imagePng       Bytes    @map("image_png")
+  capturedAt     DateTime @default(now()) @map("captured_at")
+  deviceInfo     String?  @map("device_info")
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   sale         Sale?        @relation(fields: [saleId], references: [id], onDelete: Cascade)
@@ -1268,27 +1268,27 @@ enum PaymentStatus {
 
 model Payment {
   id               String        @id @default(cuid())
-  organizationId   String
-  customerId       String
+  organizationId   String        @map("organization_id")
+  customerId       String        @map("customer_id")
   method           PaymentMethod
   amount           Decimal       @db.Decimal(14, 4)
   /// Over-payment is legal and lands here as credit on account (docs/02 §A3).
-  unappliedAmount  Decimal       @default(0) @db.Decimal(14, 4)
-  receivedAt       DateTime      @default(now())
-  receivedByUserId String?
-  routeStopId      String?
-  checkNumber      String?
-  referenceNumber  String?
+  unappliedAmount  Decimal       @default(0) @map("unapplied_amount") @db.Decimal(14, 4)
+  receivedAt       DateTime      @default(now()) @map("received_at")
+  receivedByUserId String?       @map("received_by_user_id")
+  routeStopId      String?       @map("route_stop_id")
+  checkNumber      String?       @map("check_number")
+  referenceNumber  String?       @map("reference_number")
   /// Reserved for Stripe/ACH processors; V1 records the tender only.
-  processorRef     String?
+  processorRef     String?       @map("processor_ref")
   notes            String?
   status           PaymentStatus @default(POSTED)
-  reversedAt       DateTime?
-  reversedByUserId String?
-  reversalOfId     String?       @unique
-  idempotencyKey   String
-  createdAt        DateTime      @default(now())
-  updatedAt        DateTime      @updatedAt
+  reversedAt       DateTime?     @map("reversed_at")
+  reversedByUserId String?       @map("reversed_by_user_id")
+  reversalOfId     String?       @unique @map("reversal_of_id")
+  idempotencyKey   String        @map("idempotency_key")
+  createdAt        DateTime      @default(now()) @map("created_at")
+  updatedAt        DateTime      @updatedAt @map("updated_at")
 
   organization Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   customer     Customer            @relation(fields: [customerId], references: [id])
@@ -1307,11 +1307,11 @@ model Payment {
 
 model PaymentAllocation {
   id             String   @id @default(cuid())
-  organizationId String
-  paymentId      String
-  saleId         String
+  organizationId String   @map("organization_id")
+  paymentId      String   @map("payment_id")
+  saleId         String   @map("sale_id")
   amount         Decimal  @db.Decimal(14, 4)
-  createdAt      DateTime @default(now())
+  createdAt      DateTime @default(now()) @map("created_at")
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   payment      Payment      @relation(fields: [paymentId], references: [id], onDelete: Cascade)
@@ -1352,27 +1352,27 @@ enum ReturnStatus {
 
 model Return {
   id              String                @id @default(cuid())
-  organizationId  String
-  returnNumber    String
-  customerId      String
-  saleId          String?
-  routeStopId     String?
-  createdByUserId String?
-  occurredAt      DateTime              @default(now())
+  organizationId  String                @map("organization_id")
+  returnNumber    String                @map("return_number")
+  customerId      String                @map("customer_id")
+  saleId          String?               @map("sale_id")
+  routeStopId     String?               @map("route_stop_id")
+  createdByUserId String?               @map("created_by_user_id")
+  occurredAt      DateTime              @default(now()) @map("occurred_at")
   reason          ReturnReason
   disposition     ReturnDisposition
-  financialAction ReturnFinancialAction
+  financialAction ReturnFinancialAction @map("financial_action")
 
   subtotal Decimal      @default(0) @db.Decimal(14, 4)
-  taxTotal Decimal      @default(0) @db.Decimal(14, 4)
+  taxTotal Decimal      @default(0) @map("tax_total") @db.Decimal(14, 4)
   total    Decimal      @default(0) @db.Decimal(14, 4)
   status   ReturnStatus @default(COMPLETED)
 
-  inventoryTransactionId String?  @unique
-  creditMemoId           String?  @unique
-  idempotencyKey         String
+  inventoryTransactionId String?  @unique @map("inventory_transaction_id")
+  creditMemoId           String?  @unique @map("credit_memo_id")
+  idempotencyKey         String   @map("idempotency_key")
   notes                  String?
-  createdAt              DateTime @default(now())
+  createdAt              DateTime @default(now()) @map("created_at")
 
   organization Organization          @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   customer     Customer              @relation(fields: [customerId], references: [id])
@@ -1392,14 +1392,14 @@ model Return {
 
 model ReturnItem {
   id             String       @id @default(cuid())
-  organizationId String
-  returnId       String
-  productId      String
-  productUomId   String
+  organizationId String       @map("organization_id")
+  returnId       String       @map("return_id")
+  productId      String       @map("product_id")
+  productUomId   String       @map("product_uom_id")
   quantity       Int
-  baseQuantity   Int
-  unitPrice      Decimal      @db.Decimal(12, 4)
-  lineTotal      Decimal      @db.Decimal(14, 4)
+  baseQuantity   Int          @map("base_quantity")
+  unitPrice      Decimal      @map("unit_price") @db.Decimal(12, 4)
+  lineTotal      Decimal      @map("line_total") @db.Decimal(14, 4)
   reason         ReturnReason
   /// False for destroy/write-off: no positive ledger line is posted.
   restock        Boolean      @default(true)
@@ -1421,16 +1421,16 @@ enum CreditMemoStatus {
 
 model CreditMemo {
   id              String           @id @default(cuid())
-  organizationId  String
-  customerId      String
+  organizationId  String           @map("organization_id")
+  customerId      String           @map("customer_id")
   number          String
   amount          Decimal          @db.Decimal(14, 4)
-  remainingAmount Decimal          @db.Decimal(14, 4)
+  remainingAmount Decimal          @map("remaining_amount") @db.Decimal(14, 4)
   status          CreditMemoStatus @default(OPEN)
-  issuedAt        DateTime         @default(now())
+  issuedAt        DateTime         @default(now()) @map("issued_at")
   notes           String?
-  createdAt       DateTime         @default(now())
-  updatedAt       DateTime         @updatedAt
+  createdAt       DateTime         @default(now()) @map("created_at")
+  updatedAt       DateTime         @updatedAt @map("updated_at")
 
   organization Organization            @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   customer     Customer                @relation(fields: [customerId], references: [id])
@@ -1444,11 +1444,11 @@ model CreditMemo {
 
 model CreditMemoApplication {
   id             String   @id @default(cuid())
-  organizationId String
-  creditMemoId   String
-  saleId         String
+  organizationId String   @map("organization_id")
+  creditMemoId   String   @map("credit_memo_id")
+  saleId         String   @map("sale_id")
   amount         Decimal  @db.Decimal(14, 4)
-  appliedAt      DateTime @default(now())
+  appliedAt      DateTime @default(now()) @map("applied_at")
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   creditMemo   CreditMemo   @relation(fields: [creditMemoId], references: [id], onDelete: Cascade)
@@ -1463,12 +1463,12 @@ model CreditMemoApplication {
 /// writing transaction, so two runners can never mint the same receipt number.
 model DocumentSequence {
   id             String   @id @default(cuid())
-  organizationId String
-  docType        String
+  organizationId String   @map("organization_id")
+  docType        String   @map("doc_type")
   prefix         String   @default("")
-  nextNumber     Int      @default(1)
-  padTo          Int      @default(5)
-  updatedAt      DateTime @updatedAt
+  nextNumber     Int      @default(1) @map("next_number")
+  padTo          Int      @default(5) @map("pad_to")
+  updatedAt      DateTime @updatedAt @map("updated_at")
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
@@ -1511,33 +1511,33 @@ enum ImportMatchKey {
 
 model ImportJob {
   id             String         @id @default(cuid())
-  organizationId String
+  organizationId String         @map("organization_id")
   type           ImportType
-  fileName       String
-  fileSize       Int
-  storagePath    String?
+  fileName       String         @map("file_name")
+  fileSize       Int            @map("file_size")
+  storagePath    String?        @map("storage_path")
   status         ImportStatus   @default(UPLOADED)
   mode           ImportMode     @default(UPSERT)
-  matchKey       ImportMatchKey @default(SKU)
+  matchKey       ImportMatchKey @default(SKU) @map("match_key")
 
   /// { snackloadField: incomingHeader } chosen by the user in the mapping step.
-  columnMapJson    Json @default("{}")
+  columnMapJson    Json @default("{}") @map("column_map_json")
   /// Resolutions for ambiguous references (route names, runner names).
-  referenceMapJson Json @default("{}")
+  referenceMapJson Json @default("{}") @map("reference_map_json")
 
-  totalRows    Int @default(0)
-  readyRows    Int @default(0)
-  warningRows  Int @default(0)
-  errorRows    Int @default(0)
-  importedRows Int @default(0)
-  skippedRows  Int @default(0)
+  totalRows    Int @default(0) @map("total_rows")
+  readyRows    Int @default(0) @map("ready_rows")
+  warningRows  Int @default(0) @map("warning_rows")
+  errorRows    Int @default(0) @map("error_rows")
+  importedRows Int @default(0) @map("imported_rows")
+  skippedRows  Int @default(0) @map("skipped_rows")
 
-  createdByUserId String?
-  startedAt       DateTime?
-  completedAt     DateTime?
-  summaryJson     Json      @default("{}")
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
+  createdByUserId String?   @map("created_by_user_id")
+  startedAt       DateTime? @map("started_at")
+  completedAt     DateTime? @map("completed_at")
+  summaryJson     Json      @default("{}") @map("summary_json")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   createdBy    User?        @relation("ImportCreator", fields: [createdByUserId], references: [id])
@@ -1566,16 +1566,16 @@ enum ImportRowAction {
 /// stays answerable months later.
 model ImportRow {
   id             String          @id @default(cuid())
-  organizationId String
-  importJobId    String
-  rowNumber      Int
-  rawJson        Json
-  normalizedJson Json            @default("{}")
+  organizationId String          @map("organization_id")
+  importJobId    String          @map("import_job_id")
+  rowNumber      Int             @map("row_number")
+  rawJson        Json            @map("raw_json")
+  normalizedJson Json            @default("{}") @map("normalized_json")
   status         ImportRowStatus @default(PENDING)
   action         ImportRowAction @default(CREATE)
-  messagesJson   Json            @default("[]")
-  targetType     String?
-  targetId       String?
+  messagesJson   Json            @default("[]") @map("messages_json")
+  targetType     String?         @map("target_type")
+  targetId       String?         @map("target_id")
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   importJob    ImportJob    @relation(fields: [importJobId], references: [id], onDelete: Cascade)
@@ -1602,26 +1602,26 @@ enum IntegrationStatus {
 
 model IntegrationConnection {
   id             String              @id @default(cuid())
-  organizationId String
+  organizationId String              @map("organization_id")
   provider       IntegrationProvider
   status         IntegrationStatus   @default(DISCONNECTED)
-  realmId        String?
-  companyName    String?
+  realmId        String?             @map("realm_id")
+  companyName    String?             @map("company_name")
 
   /// AES-256-GCM sealed as v1:iv:tag:ciphertext. Decrypted only inside the
   /// integration service; never logged, never returned by any API (docs/04 §7).
-  accessTokenEncrypted  String?
-  refreshTokenEncrypted String?
-  tokenExpiresAt        DateTime?
-  refreshExpiresAt      DateTime?
+  accessTokenEncrypted  String?   @map("access_token_encrypted")
+  refreshTokenEncrypted String?   @map("refresh_token_encrypted")
+  tokenExpiresAt        DateTime? @map("token_expires_at")
+  refreshExpiresAt      DateTime? @map("refresh_expires_at")
 
-  connectedByUserId String?
-  connectedAt       DateTime?
-  lastSyncAt        DateTime?
-  settingsJson      Json      @default("{}")
-  lastError         String?
-  createdAt         DateTime  @default(now())
-  updatedAt         DateTime  @updatedAt
+  connectedByUserId String?   @map("connected_by_user_id")
+  connectedAt       DateTime? @map("connected_at")
+  lastSyncAt        DateTime? @map("last_sync_at")
+  settingsJson      Json      @default("{}") @map("settings_json")
+  lastError         String?   @map("last_error")
+  createdAt         DateTime  @default(now()) @map("created_at")
+  updatedAt         DateTime  @updatedAt @map("updated_at")
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   connectedBy  User?        @relation("IntegrationConnector", fields: [connectedByUserId], references: [id])
@@ -1633,15 +1633,15 @@ model IntegrationConnection {
 /// Durable identity across systems. This table is why we never re-match on name.
 model ExternalMapping {
   id                String              @id @default(cuid())
-  organizationId    String
+  organizationId    String              @map("organization_id")
   provider          IntegrationProvider
-  entityType        String
-  localId           String
-  externalId        String
-  externalSyncToken String?
-  lastSyncedAt      DateTime?
-  createdAt         DateTime            @default(now())
-  updatedAt         DateTime            @updatedAt
+  entityType        String              @map("entity_type")
+  localId           String              @map("local_id")
+  externalId        String              @map("external_id")
+  externalSyncToken String?             @map("external_sync_token")
+  lastSyncedAt      DateTime?           @map("last_synced_at")
+  createdAt         DateTime            @default(now()) @map("created_at")
+  updatedAt         DateTime            @updatedAt @map("updated_at")
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
@@ -1661,18 +1661,18 @@ enum SyncStatus {
 
 model SyncJob {
   id             String              @id @default(cuid())
-  organizationId String
+  organizationId String              @map("organization_id")
   provider       IntegrationProvider
-  entityType     String
-  localId        String
+  entityType     String              @map("entity_type")
+  localId        String              @map("local_id")
   operation      String
   status         SyncStatus          @default(PENDING)
   attempts       Int                 @default(0)
-  nextAttemptAt  DateTime            @default(now())
-  lastError      String?
-  payloadJson    Json                @default("{}")
-  createdAt      DateTime            @default(now())
-  completedAt    DateTime?
+  nextAttemptAt  DateTime            @default(now()) @map("next_attempt_at")
+  lastError      String?             @map("last_error")
+  payloadJson    Json                @default("{}") @map("payload_json")
+  createdAt      DateTime            @default(now()) @map("created_at")
+  completedAt    DateTime?           @map("completed_at")
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   logs         SyncLog[]
@@ -1684,14 +1684,14 @@ model SyncJob {
 
 model SyncLog {
   id             String   @id @default(cuid())
-  organizationId String
-  syncJobId      String
+  organizationId String   @map("organization_id")
+  syncJobId      String   @map("sync_job_id")
   attempt        Int
   level          String
   message        String
-  requestJson    Json?
-  responseJson   Json?
-  createdAt      DateTime @default(now())
+  requestJson    Json?    @map("request_json")
+  responseJson   Json?    @map("response_json")
+  createdAt      DateTime @default(now()) @map("created_at")
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   syncJob      SyncJob      @relation(fields: [syncJobId], references: [id], onDelete: Cascade)
@@ -1715,15 +1715,15 @@ enum OutboxStatus {
 /// event can never be lost when the write succeeds.
 model OutboxEvent {
   id             String       @id @default(cuid())
-  organizationId String
+  organizationId String       @map("organization_id")
   type           String
-  payloadJson    Json
+  payloadJson    Json         @map("payload_json")
   status         OutboxStatus @default(PENDING)
   attempts       Int          @default(0)
-  availableAt    DateTime     @default(now())
-  lastError      String?
-  createdAt      DateTime     @default(now())
-  processedAt    DateTime?
+  availableAt    DateTime     @default(now()) @map("available_at")
+  lastError      String?      @map("last_error")
+  createdAt      DateTime     @default(now()) @map("created_at")
+  processedAt    DateTime?    @map("processed_at")
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
@@ -1739,15 +1739,15 @@ enum NotificationSeverity {
 
 model Notification {
   id             String               @id @default(cuid())
-  organizationId String
-  userId         String?
+  organizationId String               @map("organization_id")
+  userId         String?              @map("user_id")
   type           String
   severity       NotificationSeverity @default(INFO)
   title          String
   body           String?
-  dataJson       Json                 @default("{}")
-  readAt         DateTime?
-  createdAt      DateTime             @default(now())
+  dataJson       Json                 @default("{}") @map("data_json")
+  readAt         DateTime?            @map("read_at")
+  createdAt      DateTime             @default(now()) @map("created_at")
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   user         User?        @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -1760,16 +1760,16 @@ model Notification {
 /// go missing when a write succeeds.
 model AuditLog {
   id             String   @id @default(cuid())
-  organizationId String
-  userId         String?
+  organizationId String   @map("organization_id")
+  userId         String?  @map("user_id")
   action         String
-  entityType     String
-  entityId       String
-  beforeJson     Json?
-  afterJson      Json?
-  ipAddress      String?
-  userAgent      String?
-  createdAt      DateTime @default(now())
+  entityType     String   @map("entity_type")
+  entityId       String   @map("entity_id")
+  beforeJson     Json?    @map("before_json")
+  afterJson      Json?    @map("after_json")
+  ipAddress      String?  @map("ip_address")
+  userAgent      String?  @map("user_agent")
+  createdAt      DateTime @default(now()) @map("created_at")
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   user         User?        @relation(fields: [userId], references: [id])

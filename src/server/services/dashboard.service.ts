@@ -64,8 +64,12 @@ export type NextStop = {
   customerId: string
   customerName: string
   address: string
+  /** For a maps hand-off; coordinates when we have them, else the address. */
+  mapQuery: string
   balance: string
   status: string
+  distanceMiles: string | null
+  durationMinutes: number | null
 }
 
 export type RunnerDashboard = {
@@ -131,7 +135,7 @@ export async function getOperatorDashboard(ctx: AuthContext): Promise<OperatorDa
     id: route.id,
     name: route.name,
     runnerName: `${route.runner.firstName} ${route.runner.lastName}`.trim(),
-    vehicleName: route.vehicle ? `${route.vehicle.name} (#${route.vehicle.truckNumber})` : null,
+    vehicleName: route.vehicle ? describeVehicle(route.vehicle) : null,
     status: route.status,
     completedStops: route.stops.filter((s) => FINISHED_STOP.has(s.status)).length,
     totalStops: route.stops.length,
@@ -213,9 +217,11 @@ export async function getRunnerDashboard(ctx: AuthContext): Promise<RunnerDashbo
           id: true,
           sequence: true,
           status: true,
+          distanceMiles: true,
+          durationMinutes: true,
           customer: {
             select: {
-              id: true, name: true, balance: true,
+              id: true, name: true, balance: true, latitude: true, longitude: true,
               addressLine1: true, city: true, state: true, postalCode: true,
             },
           },
@@ -242,8 +248,14 @@ export async function getRunnerDashboard(ctx: AuthContext): Promise<RunnerDashbo
     customerId: stop.customer.id,
     customerName: stop.customer.name,
     address: formatAddress(stop.customer),
+    mapQuery:
+      stop.customer.latitude && stop.customer.longitude
+        ? `${stop.customer.latitude},${stop.customer.longitude}`
+        : formatAddress(stop.customer),
     balance: toAmountString(stop.customer.balance),
     status: stop.status,
+    distanceMiles: stop.distanceMiles?.toString() ?? null,
+    durationMinutes: stop.durationMinutes,
   }))
 
   const remaining = stops.filter(
@@ -265,6 +277,12 @@ export async function getRunnerDashboard(ctx: AuthContext): Promise<RunnerDashbo
 
 export function dashboardKindFor(ctx: AuthContext): 'operator' | 'runner' {
   return can(ctx, 'route:read') || can(ctx, 'report:read') ? 'operator' : 'runner'
+}
+
+function describeVehicle(vehicle: { name: string; truckNumber: string }): string {
+  return vehicle.name.includes(vehicle.truckNumber)
+    ? vehicle.name
+    : `${vehicle.name} (#${vehicle.truckNumber})`
 }
 
 const FINISHED_STOP: ReadonlySet<string> = new Set([

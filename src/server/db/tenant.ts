@@ -60,19 +60,39 @@ type AnyArgs = Record<string, unknown>
 
 function scopeWhere(args: AnyArgs, organizationId: string): void {
   const where = (args.where ?? {}) as AnyArgs
-  // Callers must not be able to widen their own scope by passing organizationId.
+
+  // Silently rewriting a caller-supplied organizationId would be safe but
+  // dishonest: the query would quietly return rows the caller did not ask for.
+  // Reaching here means a service built a cross-tenant query, so say so.
+  if (where.organizationId !== undefined && where.organizationId !== organizationId) {
+    throw new AppError(
+      'FORBIDDEN',
+      'Cross-organization access is not permitted. Scope comes from the session, not the query.',
+    )
+  }
+
   where.organizationId = organizationId
   args.where = where
+}
+
+function assertOwnOrg(row: AnyArgs, organizationId: string): void {
+  if (row.organizationId !== undefined && row.organizationId !== organizationId) {
+    throw new AppError('FORBIDDEN', 'Cannot write a record into another organization.')
+  }
 }
 
 function scopeData(args: AnyArgs, organizationId: string): void {
   const data = args.data
   if (Array.isArray(data)) {
     for (const row of data) {
-      if (row && typeof row === 'object') (row as AnyArgs).organizationId ??= organizationId
+      if (row && typeof row === 'object') {
+        assertOwnOrg(row as AnyArgs, organizationId)
+        ;(row as AnyArgs).organizationId ??= organizationId
+      }
     }
   } else if (data && typeof data === 'object') {
     const row = data as AnyArgs
+    assertOwnOrg(row, organizationId)
     // `organization: { connect: … }` is the relation form; don't fight with it.
     if (!('organization' in row)) row.organizationId ??= organizationId
   }

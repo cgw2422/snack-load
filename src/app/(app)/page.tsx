@@ -49,8 +49,18 @@ async function OperatorHome({
 
       <section aria-label="Today at a glance">
         <div className="grid grid-cols-2 gap-2.5 lg:grid-cols-3">
-          {data.metrics.map((metric) => (
-            <MetricTileCard key={metric.key} metric={metric} currency={currency} />
+          {data.metrics.map((metric, index) => (
+            <MetricTileCard
+              key={metric.key}
+              metric={metric}
+              currency={currency}
+              // An odd final tile spans the row rather than sitting alone.
+              className={
+                index === data.metrics.length - 1 && data.metrics.length % 2 === 1
+                  ? 'col-span-2 lg:col-span-1'
+                  : undefined
+              }
+            />
           ))}
         </div>
       </section>
@@ -178,6 +188,15 @@ async function RunnerHome({ ctx }: { ctx: Ctx }) {
 
   return (
     <div className="mx-auto w-full max-w-2xl space-y-4 px-4 py-4">
+      {data.routeName ? (
+        <div className="flex items-baseline justify-between">
+          <h1 className="text-lg font-extrabold text-ink">{data.routeName}</h1>
+          <p className="tnum text-sm font-semibold text-ink-muted">
+            {data.completedStops} of {data.totalStops} stops done
+          </p>
+        </div>
+      ) : null}
+
       <div className="grid grid-cols-2 gap-2.5">
         <div className="rounded-card bg-cash-50 px-3.5 py-3 text-cash-700 dark:bg-cash-700/20 dark:text-cash-100">
           <p className="text-[11px] font-bold uppercase tracking-wide opacity-75">Sold today</p>
@@ -201,6 +220,16 @@ async function RunnerHome({ ctx }: { ctx: Ctx }) {
             </p>
             <h2 className="mt-1 text-xl font-extrabold text-ink">{data.nextStop.customerName}</h2>
             <p className="mt-0.5 text-sm text-ink-muted">{data.nextStop.address}</p>
+            {data.nextStop.distanceMiles || data.nextStop.durationMinutes ? (
+              <p className="tnum mt-1.5 text-sm font-semibold text-navy-600 dark:text-navy-200">
+                {[
+                  data.nextStop.distanceMiles ? `${data.nextStop.distanceMiles} mi` : null,
+                  data.nextStop.durationMinutes ? `${data.nextStop.durationMinutes} min` : null,
+                ]
+                  .filter(Boolean)
+                  .join(' · ')}
+              </p>
+            ) : null}
             {Number(data.nextStop.balance) > 0 ? (
               <p className="tnum mt-2 text-sm font-semibold text-alert-600">
                 Owes {formatMoney(data.nextStop.balance, currency)}
@@ -210,7 +239,9 @@ async function RunnerHome({ ctx }: { ctx: Ctx }) {
 
           <div className="grid grid-cols-2 gap-2.5 p-4">
             <ButtonLink
-              href={`/customers/${data.nextStop.customerId}`}
+              href={`https://maps.google.com/?q=${encodeURIComponent(data.nextStop.mapQuery)}`}
+              target="_blank"
+              rel="noopener noreferrer"
               size="lg"
               variant="secondary"
             >
