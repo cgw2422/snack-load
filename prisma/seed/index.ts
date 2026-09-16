@@ -113,11 +113,24 @@ async function main() {
     return ids
   })
 
-  const { locationId: warehouseLocationId } = await seedPrimaryWarehouse(
+  const { warehouseId: mainWarehouseId, locationId: warehouseLocationId } = await seedPrimaryWarehouse(
     unsafeDb,
     organizationId,
     'Main Warehouse',
   )
+
+  // The depot the trucks leave from — route optimisation starts here.
+  await unsafeDb.warehouse.update({
+    where: { id: mainWarehouseId },
+    data: {
+      addressLine1: '1420 Industrial Pkwy',
+      city: 'Sandusky',
+      state: 'OH',
+      postalCode: '44870',
+      latitude: '41.437300',
+      longitude: '-82.672700',
+    },
+  })
 
   const taxRate = await unsafeDb.taxRate.create({
     data: { organizationId, name: 'Ohio 7.25%', rate: TAX_RATE, isDefault: true },

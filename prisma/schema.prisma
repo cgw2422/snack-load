@@ -613,6 +613,11 @@ model Warehouse {
   city           String?
   state          String?
   postalCode     String?  @map("postal_code")
+  /// A route starts where the truck is loaded. Optimising stop order without
+  /// this produces an order that looks tidy on a map and wastes the first
+  /// twenty minutes of the morning.
+  latitude       Decimal? @db.Decimal(9, 6)
+  longitude      Decimal? @db.Decimal(9, 6)
   isPrimary      Boolean  @default(false) @map("is_primary")
   notes          String?
   createdAt      DateTime @default(now()) @map("created_at")

@@ -91,13 +91,14 @@ export function buildCtx(args: {
 export async function addMember(
   org: TestOrg,
   roleKey: RoleKey,
+  name?: { firstName: string; lastName: string },
 ): Promise<{ userId: string; ctx: AuthContext }> {
   const user = await unsafeDb.user.create({
     data: {
       email: uniqueEmail(roleKey),
       passwordHash: await hashPassword('test-password-1'),
-      firstName: 'Mike',
-      lastName: 'Runner',
+      firstName: name?.firstName ?? `Member${++counter}`,
+      lastName: name?.lastName ?? 'Test',
     },
     select: { id: true },
   })
