@@ -2,18 +2,15 @@ import Link from 'next/link'
 import { redirect } from 'next/navigation'
 import type { Metadata } from 'next'
 import { Card } from '@/components/ui/Card'
+import { firstValue } from '@/lib/searchParams'
 import { LoginForm } from '@/components/auth/LoginForm'
 import { getAuthContext } from '@/server/auth/context'
 
 export const metadata: Metadata = { title: 'Sign in' }
 
-export default async function LoginPage({
-  searchParams,
-}: {
-  searchParams: Promise<{ next?: string }>
-}) {
+export default async function LoginPage(props: PageProps<'/login'>) {
   if (await getAuthContext()) redirect('/')
-  const { next } = await searchParams
+  const next = firstValue((await props.searchParams).next)
 
   return (
     <Card className="p-5">

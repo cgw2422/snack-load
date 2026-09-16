@@ -8,7 +8,7 @@ import { BottomNav } from '@/components/shell/BottomNav'
 import { Sidebar } from '@/components/shell/Sidebar'
 import { TopBar } from '@/components/shell/TopBar'
 
-export default async function AppLayout({ children }: { children: ReactNode }) {
+export default async function AppLayout({ children }: LayoutProps<'/'>) {
   const ctx = await getAuthContext()
   if (!ctx) redirect('/login')
 

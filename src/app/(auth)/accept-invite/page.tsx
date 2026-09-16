@@ -1,6 +1,7 @@
 import Link from 'next/link'
 import type { Metadata } from 'next'
 import { Card } from '@/components/ui/Card'
+import { firstValue } from '@/lib/searchParams'
 import { AcceptInviteForm } from '@/components/auth/AcceptInviteForm'
 import { isAppError } from '@/lib/errors'
 import { previewInvitation } from '@/server/services/auth.service'
@@ -8,12 +9,8 @@ import type { InvitationPreview } from '@/server/services/auth.service'
 
 export const metadata: Metadata = { title: 'Join your team' }
 
-export default async function AcceptInvitePage({
-  searchParams,
-}: {
-  searchParams: Promise<{ token?: string }>
-}) {
-  const { token } = await searchParams
+export default async function AcceptInvitePage(props: PageProps<'/accept-invite'>) {
+  const token = firstValue((await props.searchParams).token)
 
   let preview: InvitationPreview | null = null
   let problem: string | null = null

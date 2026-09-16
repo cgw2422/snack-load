@@ -15,11 +15,11 @@ import { VehicleForm } from '@/components/vehicles/VehicleForm'
 
 export const metadata: Metadata = { title: 'Truck' }
 
-export default async function VehiclePage({ params }: { params: Promise<{ id: string }> }) {
+export default async function VehiclePage(props: PageProps<'/vehicles/[id]'>) {
   const ctx = await requireAuth()
   if (!can(ctx, 'inventory:read')) redirect('/')
 
-  const { id } = await params
+  const { id } = await props.params
   const prisma = db(ctx)
 
   const vehicle = await prisma.vehicle.findFirst({

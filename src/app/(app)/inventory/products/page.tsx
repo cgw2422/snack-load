@@ -5,6 +5,7 @@ import { ChevronRight, TriangleAlert, Upload } from 'lucide-react'
 import { can, requireAuth } from '@/server/auth/context'
 import { listProducts } from '@/server/services/product.service'
 import { listQuerySchema } from '@/lib/schemas/catalog'
+import { flattenSearchParams } from '@/lib/searchParams'
 import { formatMoney } from '@/server/domain/money'
 import { Card, EmptyState } from '@/components/ui/Card'
 import { Pill } from '@/components/ui/Pill'
@@ -14,15 +15,11 @@ import { ButtonLink } from '@/components/ui/Button'
 
 export const metadata: Metadata = { title: 'Products' }
 
-export default async function ProductsPage({
-  searchParams,
-}: {
-  searchParams: Promise<Record<string, string | undefined>>
-}) {
+export default async function ProductsPage(props: PageProps<'/inventory/products'>) {
   const ctx = await requireAuth()
   if (!can(ctx, 'product:read')) redirect('/')
 
-  const raw = await searchParams
+  const raw = flattenSearchParams(await props.searchParams)
   const query = listQuerySchema.parse({ ...raw, pageSize: raw.pageSize ?? 50 })
   const { items, total, page, pageCount } = await listProducts(ctx, query)
   const currency = ctx.organization.currency

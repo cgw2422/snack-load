@@ -11,9 +11,9 @@ import { cancelImportAction } from '../actions'
 
 export const metadata: Metadata = { title: 'Import' }
 
-export default async function ImportPage({ params }: { params: Promise<{ id: string }> }) {
+export default async function ImportPage(props: PageProps<'/imports/[id]'>) {
   const ctx = await requireAuth()
-  const { id } = await params
+  const { id } = await props.params
 
   let preview
   try {

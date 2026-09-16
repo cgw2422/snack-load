@@ -2,6 +2,7 @@ import type { Metadata } from 'next'
 import { redirect } from 'next/navigation'
 import { can, requireAuth } from '@/server/auth/context'
 import { db } from '@/server/db/tenant'
+import { firstValue } from '@/lib/searchParams'
 import { formatShortDate, todayDateOnly } from '@/lib/dates'
 import { listVehicles, suggestLoad } from '@/server/services/truckload.service'
 import type { SuggestedLoadLine } from '@/server/services/truckload.service'
@@ -10,15 +11,11 @@ import { LoadTruckForm } from '@/components/stock/LoadTruckForm'
 
 export const metadata: Metadata = { title: 'Load a truck' }
 
-export default async function LoadPage({
-  searchParams,
-}: {
-  searchParams: Promise<{ direction?: string }>
-}) {
+export default async function LoadPage(props: PageProps<'/inventory/load'>) {
   const ctx = await requireAuth()
   if (!can(ctx, 'inventory:load_truck')) redirect('/inventory')
 
-  const { direction: rawDirection } = await searchParams
+  const rawDirection = firstValue((await props.searchParams).direction)
   const direction = rawDirection === 'UNLOAD' ? 'UNLOAD' : 'LOAD'
 
   const prisma = db(ctx)

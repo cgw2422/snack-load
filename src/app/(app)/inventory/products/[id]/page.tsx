@@ -15,9 +15,9 @@ import { LedgerList } from '@/components/stock/LedgerList'
 
 export const metadata: Metadata = { title: 'Product' }
 
-export default async function ProductPage({ params }: { params: Promise<{ id: string }> }) {
+export default async function ProductPage(props: PageProps<'/inventory/products/[id]'>) {
   const ctx = await requireAuth()
-  const { id } = await params
+  const { id } = await props.params
 
   let product
   try {

@@ -24,9 +24,9 @@ const FREQUENCY_LABEL: Record<string, string> = {
   MONTHLY: 'monthly', CUSTOM: 'on a custom cycle',
 }
 
-export default async function CustomerPage({ params }: { params: Promise<{ id: string }> }) {
+export default async function CustomerPage(props: PageProps<'/customers/[id]'>) {
   const ctx = await requireAuth()
-  const { id } = await params
+  const { id } = await props.params
 
   let customer
   try {

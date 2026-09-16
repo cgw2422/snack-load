@@ -5,6 +5,7 @@ import { ChevronRight, Upload } from 'lucide-react'
 import { can, requireAuth } from '@/server/auth/context'
 import { listCustomers } from '@/server/services/customer.service'
 import { listQuerySchema } from '@/lib/schemas/catalog'
+import { flattenSearchParams } from '@/lib/searchParams'
 import { formatMoney } from '@/server/domain/money'
 import { relativeTime } from '@/lib/dates'
 import { Card, EmptyState } from '@/components/ui/Card'
@@ -22,15 +23,11 @@ const DAY_LABEL: Record<string, string> = {
   FRIDAY: 'Fri', SATURDAY: 'Sat', SUNDAY: 'Sun',
 }
 
-export default async function CustomersPage({
-  searchParams,
-}: {
-  searchParams: Promise<Record<string, string | undefined>>
-}) {
+export default async function CustomersPage(props: PageProps<'/customers'>) {
   const ctx = await requireAuth()
   if (!can(ctx, 'customer:read')) redirect('/')
 
-  const raw = await searchParams
+  const raw = flattenSearchParams(await props.searchParams)
   const query = listQuerySchema.parse(raw)
   const { items, total, page, pageCount } = await listCustomers(ctx, query)
   const currency = ctx.organization.currency
