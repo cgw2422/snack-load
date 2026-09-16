@@ -4,12 +4,14 @@ import { notFound as nextNotFound } from 'next/navigation'
 import { ArrowLeft, Boxes, Warehouse, Truck } from 'lucide-react'
 import { can, requireAuth } from '@/server/auth/context'
 import { getProduct } from '@/server/services/product.service'
+import { listLedger } from '@/server/services/receiving.service'
 import { lineMargin } from '@/server/domain/pricing'
 import { formatMoney } from '@/server/domain/money'
 import { formatQuantityLong } from '@/server/domain/uom'
 import { isAppError } from '@/lib/errors'
 import { Card, CardHeader } from '@/components/ui/Card'
 import { Pill } from '@/components/ui/Pill'
+import { LedgerList } from '@/components/stock/LedgerList'
 
 export const metadata: Metadata = { title: 'Product' }
 
@@ -24,6 +26,10 @@ export default async function ProductPage({ params }: { params: Promise<{ id: st
     if (isAppError(error) && error.code === 'NOT_FOUND') nextNotFound()
     throw error
   }
+
+  const ledger = can(ctx, 'inventory:read')
+    ? await listLedger(ctx, { productId: product.id, limit: 20 })
+    : []
 
   const currency = ctx.organization.currency
   const showCost = can(ctx, 'report:financial') || can(ctx, 'product:update')
@@ -172,6 +178,13 @@ export default async function ProductPage({ params }: { params: Promise<{ id: st
           </p>
         ) : null}
       </Card>
+
+      {ledger.length > 0 ? (
+        <Card>
+          <CardHeader title="Movement history" />
+          <LedgerList entries={ledger} showProduct={false} />
+        </Card>
+      ) : null}
 
       {product.notes ? (
         <Card className="p-4">

@@ -1,13 +1,16 @@
 import Link from 'next/link'
 import type { Metadata } from 'next'
 import { redirect } from 'next/navigation'
-import { Boxes, ChevronRight, PackagePlus, Truck, Warehouse } from 'lucide-react'
+import {
+  ArrowLeftRight, Boxes, ChevronRight, ClipboardCheck, PackageMinus, PackagePlus, Truck, Warehouse,
+} from 'lucide-react'
 import { can, requireAuth } from '@/server/auth/context'
 import { db } from '@/server/db/tenant'
 import { formatMoney } from '@/server/domain/money'
 import { Prisma } from '@/generated/prisma/client'
 import { Card, CardHeader } from '@/components/ui/Card'
-import { Pill } from '@/components/ui/Pill'
+import { LedgerList } from '@/components/stock/LedgerList'
+import { listLedger } from '@/server/services/receiving.service'
 
 export const metadata: Metadata = { title: 'Inventory' }
 
@@ -18,7 +21,7 @@ export default async function InventoryPage() {
   const prisma = db(ctx)
   const currency = ctx.organization.currency
 
-  const [productCount, locations, lowStock] = await Promise.all([
+  const [productCount, locations, lowStock, ledger] = await Promise.all([
     prisma.product.count({ where: { active: true } }),
     prisma.$queryRaw<{ id: string; name: string; kind: string; skus: bigint; value: string }[]>(
       Prisma.sql`
@@ -37,7 +40,54 @@ export default async function InventoryPage() {
     prisma.product.count({
       where: { active: true, reorderPointBaseUnits: { gt: 0 } },
     }),
+    listLedger(ctx, { limit: 12 }),
   ])
+
+  // Only offer what this person may actually do.
+  const actions = [
+    {
+      href: '/inventory/products',
+      label: 'Products',
+      description: 'Your catalog, prices and stock levels',
+      icon: Boxes,
+      allowed: can(ctx, 'product:read'),
+    },
+    {
+      href: '/inventory/receive',
+      label: 'Receive stock',
+      description: 'Bring a supplier shipment into the warehouse',
+      icon: PackagePlus,
+      allowed: can(ctx, 'inventory:receive'),
+    },
+    {
+      href: '/inventory/load',
+      label: 'Load a truck',
+      description: 'Move stock onto a truck before the route starts',
+      icon: Truck,
+      allowed: can(ctx, 'inventory:load_truck'),
+    },
+    {
+      href: '/inventory/load?direction=UNLOAD',
+      label: 'Unload a truck',
+      description: 'Bring back what did not sell',
+      icon: PackageMinus,
+      allowed: can(ctx, 'inventory:unload_truck'),
+    },
+    {
+      href: '/inventory/transfer',
+      label: 'Transfer stock',
+      description: 'Move stock between warehouses and trucks',
+      icon: ArrowLeftRight,
+      allowed: can(ctx, 'inventory:transfer'),
+    },
+    {
+      href: '/inventory/adjust',
+      label: 'Adjust or count',
+      description: 'Damage, expiry, shrinkage, samples or a physical count',
+      icon: ClipboardCheck,
+      allowed: can(ctx, 'inventory:adjust'),
+    },
+  ].filter((action) => action.allowed)
 
   const totalValue = locations.reduce((sum, l) => sum + Number(l.value), 0)
 
@@ -98,37 +148,34 @@ export default async function InventoryPage() {
 
       <Card>
         <ul className="divide-y divide-line">
-          <li>
-            <Link
-              href="/inventory/products"
-              className="flex min-h-touch items-center gap-3 px-4 py-3 transition-colors hover:bg-surface-sunken"
-            >
-              <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-surface-sunken text-navy-700 dark:text-navy-100">
-                <Boxes className="size-5" aria-hidden="true" />
-              </span>
-              <span className="min-w-0 flex-1">
-                <span className="block text-sm font-semibold text-ink">Products</span>
-                <span className="block text-xs text-ink-muted">
-                  Your catalog, prices and stock levels
+          {actions.map((action) => (
+            <li key={action.href}>
+              <Link
+                href={action.href}
+                className="flex min-h-touch items-center gap-3 px-4 py-3 transition-colors hover:bg-surface-sunken"
+              >
+                <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-surface-sunken text-navy-700 dark:text-navy-100">
+                  <action.icon className="size-5" aria-hidden="true" />
                 </span>
-              </span>
-              <ChevronRight className="size-4 shrink-0 text-ink-subtle" aria-hidden="true" />
-            </Link>
-          </li>
-
-          <li className="flex min-h-touch items-center gap-3 px-4 py-3 opacity-60">
-            <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-surface-sunken text-ink-subtle">
-              <PackagePlus className="size-5" aria-hidden="true" />
-            </span>
-            <span className="min-w-0 flex-1">
-              <span className="block text-sm font-semibold text-ink">Receive &amp; load trucks</span>
-              <span className="block text-xs text-ink-muted">
-                Supplier receipts, adjustments, truck loading
-              </span>
-            </span>
-            <Pill tone="flame">Phase 3</Pill>
-          </li>
+                <span className="min-w-0 flex-1">
+                  <span className="block text-sm font-semibold text-ink">{action.label}</span>
+                  <span className="block text-xs text-ink-muted">{action.description}</span>
+                </span>
+                <ChevronRight className="size-4 shrink-0 text-ink-subtle" aria-hidden="true" />
+              </Link>
+            </li>
+          ))}
         </ul>
+      </Card>
+
+      <Card>
+        <CardHeader
+          title="Recent movements"
+          action={
+            <span className="text-xs text-ink-subtle">Every number here is explainable</span>
+          }
+        />
+        <LedgerList entries={ledger} />
       </Card>
     </div>
   )
