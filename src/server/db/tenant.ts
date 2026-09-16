@@ -135,6 +135,16 @@ function buildScopedClient(organizationId: string) {
 
 export type TenantDb = ReturnType<typeof buildScopedClient>
 
+/**
+ * What a `db(ctx).$transaction(async (tx) => …)` callback receives. Services that
+ * post inside a caller's transaction take this, so every write in the app — the
+ * ledger engine included — runs through the scoped client rather than the raw one.
+ */
+export type TenantTx = Omit<
+  TenantDb,
+  '$connect' | '$disconnect' | '$on' | '$use' | '$extends' | '$transaction'
+>
+
 /** Scoped clients are memoized per organization; building one per request is waste. */
 const cache = new Map<string, TenantDb>()
 

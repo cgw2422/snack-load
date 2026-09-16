@@ -1,6 +1,7 @@
 import { createId } from '@paralleldrive/cuid2'
 import { Prisma } from '@/generated/prisma/client'
 import type { InventoryTransactionType } from '@/generated/prisma/enums'
+import type { LedgerTx, RawCapable, SequenceTx } from '@/server/db/tx'
 import { AppError } from '@/lib/errors'
 import { m, round6 } from '@/server/domain/money'
 
@@ -77,7 +78,7 @@ type LockedBalance = {
 const key = (locationId: string, productId: string) => `${locationId}:${productId}`
 
 export async function postInventoryTransaction(
-  tx: Prisma.TransactionClient,
+  tx: LedgerTx,
   organizationId: string,
   input: PostTransactionInput,
 ): Promise<PostedTransaction> {
@@ -254,7 +255,7 @@ function assertConservation(input: PostTransactionInput): void {
  * postings for the same pair cannot race into a unique-constraint failure.
  */
 async function lockBalance(
-  tx: Prisma.TransactionClient,
+  tx: RawCapable,
   organizationId: string,
   locationId: string,
   productId: string,
@@ -293,7 +294,7 @@ async function lockBalance(
  * tests and exposed to admins as an integrity report.
  */
 export async function findBalanceDrift(
-  tx: Prisma.TransactionClient,
+  tx: RawCapable,
   organizationId: string,
 ): Promise<{ locationId: string; productId: string; balance: number; ledger: number }[]> {
   const rows = await tx.$queryRaw<
@@ -325,7 +326,7 @@ export async function findBalanceDrift(
 
 /** Atomic document numbering (docs/02 §I3). Must run inside the writing transaction. */
 export async function nextDocumentNumber(
-  tx: Prisma.TransactionClient,
+  tx: SequenceTx,
   organizationId: string,
   docType: string,
 ): Promise<string> {
