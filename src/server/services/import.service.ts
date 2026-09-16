@@ -154,6 +154,7 @@ export async function validateImportJob(
   })
 
   const existing = await buildExistingIndex(ctx, job.type)
+  const knownReferences = await buildKnownReferences(ctx, job.type)
   const seen = { sku: new Set<string>(), upc: new Set<string>(), accountNumber: new Set<string>() }
 
   const verdicts: (RowVerdict & { id: string; rowNumber: number })[] = []
@@ -168,6 +169,7 @@ export async function validateImportJob(
       mapping: settings.mapping,
       existing,
       seen,
+      knownReferences,
       resolvedReferences: settings.resolvedReferences,
     })
 
@@ -191,6 +193,14 @@ export async function validateImportJob(
     warning: verdicts.filter((v) => v.status === 'WARNING').length,
     error: verdicts.filter((v) => v.status === 'ERROR').length,
   }
+
+  const unresolved = await resolveReferenceOptions(
+    ctx,
+    job.type,
+    [...references.entries()],
+    { ...(job.referenceMapJson as Record<string, string>), ...(settings.resolvedReferences ?? {}) },
+    knownReferences,
+  )
 
   await prisma.$transaction(async (tx) => {
     for (const verdict of verdicts) {
@@ -218,11 +228,15 @@ export async function validateImportJob(
         readyRows: counts.ready,
         warningRows: counts.warning,
         errorRows: counts.error,
+        summaryJson: {
+          ...((job.summaryJson ?? {}) as Record<string, unknown>),
+          unresolved,
+        } as Prisma.InputJsonValue,
       },
     })
   })
 
-  return getImportPreview(ctx, jobId, [...references.entries()])
+  return getImportPreview(ctx, jobId)
 }
 
 /** Step 3 — commit. Chunked and resumable; progress lives on the rows. */
@@ -347,6 +361,7 @@ export async function patchImportRow(
     matchKey: job.matchKey,
     mapping: job.columnMapJson as Record<string, string>,
     existing,
+    knownReferences: await buildKnownReferences(ctx, job.type),
     // The file-level duplicate check does not apply to a single re-validation;
     // the row is being compared against what is in the database.
     seen: { sku: new Set(), upc: new Set(), accountNumber: new Set() },
@@ -371,7 +386,6 @@ export async function patchImportRow(
 export async function getImportPreview(
   ctx: AuthContext,
   jobId: string,
-  referenceEntries?: [string, Set<string>][],
 ): Promise<ImportPreview> {
   const job = await requireJob(ctx, jobId)
   const prisma = db(ctx)
@@ -386,17 +400,17 @@ export async function getImportPreview(
     },
   })
 
-  const summary = (job.summaryJson ?? {}) as { headers?: string[] }
-  const unresolved = referenceEntries
-    ? await resolveReferenceOptions(ctx, job.type, referenceEntries, job.referenceMapJson as Record<string, string>)
-    : []
+  const summary = (job.summaryJson ?? {}) as {
+    headers?: string[]
+    unresolved?: ImportPreview['unresolved']
+  }
 
   return {
     ...toSummary(job),
     headers: summary.headers ?? [],
     mapping: job.columnMapJson as Record<string, string>,
     fields: fieldsFor(job.type),
-    unresolved,
+    unresolved: summary.unresolved ?? [],
     rows: rows.map((row) => ({
       id: row.id,
       rowNumber: row.rowNumber,
@@ -540,6 +554,54 @@ async function buildExistingIndex(
 }
 
 /**
+ * What this company already has, indexed by the names a spreadsheet might use.
+ * Categories and suppliers are absent on purpose: those are created on demand,
+ * so an unknown one is not a decision anyone needs to make.
+ */
+async function buildKnownReferences(
+  ctx: AuthContext,
+  type: ImportType,
+): Promise<Record<string, Record<string, string>>> {
+  if (type !== 'CUSTOMERS') return {}
+  const prisma = db(ctx)
+
+  const [routes, members] = await Promise.all([
+    prisma.routeTemplate.findMany({
+      where: { active: true },
+      select: { id: true, name: true, code: true },
+    }),
+    prisma.membership.findMany({
+      where: { status: 'ACTIVE' },
+      select: { user: { select: { id: true, firstName: true, lastName: true, email: true } } },
+    }),
+  ])
+
+  const route: Record<string, string> = {}
+  for (const r of routes) {
+    route[r.name.toLowerCase()] = r.id
+    if (r.code) route[r.code.toLowerCase()] = r.id
+  }
+
+  // First names are indexed too, because spreadsheets say "Mike" — but only when
+  // exactly one person answers to it. Two Mikes is a decision, not a guess.
+  const runner: Record<string, string> = {}
+  const firstNameCounts = new Map<string, number>()
+  for (const mm of members) {
+    const first = mm.user.firstName.toLowerCase()
+    firstNameCounts.set(first, (firstNameCounts.get(first) ?? 0) + 1)
+  }
+  for (const mm of members) {
+    const full = `${mm.user.firstName} ${mm.user.lastName}`.trim().toLowerCase()
+    runner[full] = mm.user.id
+    runner[mm.user.email.toLowerCase()] = mm.user.id
+    const first = mm.user.firstName.toLowerCase()
+    if (firstNameCounts.get(first) === 1) runner[first] = mm.user.id
+  }
+
+  return { route, runner }
+}
+
+/**
  * For each distinct route/runner/category/supplier name in the file, offer what
  * it could map to. The user decides; we never silently create a user or a route
  * from a spreadsheet cell (docs/03 §5).
@@ -549,6 +611,7 @@ async function resolveReferenceOptions(
   type: ImportType,
   entries: [string, Set<string>][],
   alreadyResolved: Record<string, string>,
+  known: Record<string, Record<string, string>>,
 ): Promise<ImportPreview['unresolved']> {
   const prisma = db(ctx)
   const out: ImportPreview['unresolved'] = []
@@ -581,15 +644,10 @@ async function resolveReferenceOptions(
     }
 
     for (const value of values) {
-      const key = `${kind}:${value.toLowerCase()}`
-      if (alreadyResolved?.[key]) continue
-
-      // An exact name match needs no decision from anyone.
-      const exact = options.find((o) => o.label.toLowerCase() === value.toLowerCase())
-      const firstName = options.find(
-        (o) => o.label.toLowerCase().split(' ')[0] === value.toLowerCase(),
-      )
-      if (exact || firstName) continue
+      const lowered = value.toLowerCase()
+      if (alreadyResolved?.[`${kind}:${lowered}`]) continue
+      // Already matched by name — nobody needs to be asked about it.
+      if (known[kind]?.[lowered]) continue
 
       out.push({ kind, value, suggestions: rank(value, options) })
     }
@@ -882,7 +940,10 @@ async function applySchedule(
   // A runner named in the file only steers which of their routes to use; it
   // never creates a person or reassigns a route behind the owner's back.
   if (!routeTemplateId && runnerName) {
-    const runnerId = resolved[`runner:${runnerName.toLowerCase()}`]
+    // The validator has usually already matched the name; fall back to the
+    // explicit resolution the user made in the mapping step.
+    const runnerId =
+      (values.runnerId as string | undefined) ?? resolved[`runner:${runnerName.toLowerCase()}`]
     if (runnerId) {
       routeTemplateId =
         (

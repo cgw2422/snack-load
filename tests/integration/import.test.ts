@@ -328,6 +328,95 @@ describe('customer import', () => {
     expect(await db(org.ownerCtx).customerSchedule.count()).toBe(0)
   })
 
+  it('does not ask about a route the company plainly already has', async () => {
+    await db(org.ownerCtx).routeTemplate.create({
+      data: { organizationId: org.organizationId, name: 'Route A', dayOfWeek: 'TUESDAY' },
+    })
+
+    const job = await importService.createImportJob(org.ownerCtx, {
+      type: 'CUSTOMERS',
+      fileName: 'known.csv',
+      bytes: enc("Acct #,Store Name,City,Route,Day\n1001,Joe's Marathon,Riverton,Route A,Tue\n"),
+    })
+    const preview = await importService.validateImportJob(org.ownerCtx, job.jobId, {
+      mapping: job.mapping,
+      mode: 'UPSERT',
+      matchKey: 'ACCOUNT_NUMBER',
+    })
+
+    expect(preview.unresolved).toEqual([])
+    expect(preview.readyRows).toBe(1)
+    expect(preview.warningRows).toBe(0)
+
+    await importService.commitImportJob(org.ownerCtx, job.jobId)
+    const schedule = await db(org.ownerCtx).customerSchedule.findFirst({})
+    expect(schedule?.dayOfWeek).toBe('TUESDAY')
+  })
+
+  it('matches a runner by first name when only one person answers to it', async () => {
+    const mike = await unsafeDb.user.create({
+      data: {
+        email: `mike-${Date.now()}@test.local`,
+        passwordHash: 'x',
+        firstName: 'Mike',
+        lastName: 'Donnelly',
+      },
+      select: { id: true },
+    })
+    await unsafeDb.membership.create({
+      data: {
+        organizationId: org.organizationId,
+        userId: mike.id,
+        roleId: org.roleIds.runner,
+      },
+    })
+    await db(org.ownerCtx).routeTemplate.create({
+      data: {
+        organizationId: org.organizationId,
+        name: 'Route A',
+        dayOfWeek: 'TUESDAY',
+        defaultRunnerUserId: mike.id,
+      },
+    })
+
+    const job = await importService.createImportJob(org.ownerCtx, {
+      type: 'CUSTOMERS',
+      fileName: 'runner.csv',
+      bytes: enc("Acct #,Store Name,City,Runner\n1001,Joe's Marathon,Riverton,Mike\n"),
+    })
+    const preview = await importService.validateImportJob(org.ownerCtx, job.jobId, {
+      mapping: job.mapping,
+      mode: 'UPSERT',
+      matchKey: 'ACCOUNT_NUMBER',
+    })
+    expect(preview.unresolved).toEqual([])
+
+    await importService.commitImportJob(org.ownerCtx, job.jobId)
+    const schedule = await db(org.ownerCtx).customerSchedule.findFirst({
+      include: { routeTemplate: true },
+    })
+    expect(schedule?.routeTemplate.name).toBe('Route A')
+
+    await unsafeDb.user.delete({ where: { id: mike.id } })
+  })
+
+  it('remembers what still needs deciding, so a reload still shows it', async () => {
+    const job = await importService.createImportJob(org.ownerCtx, {
+      type: 'CUSTOMERS',
+      fileName: 'unknown.csv',
+      bytes: enc("Acct #,Store Name,City,Route\n1001,Joe's Marathon,Riverton,Mystery Route\n"),
+    })
+    await importService.validateImportJob(org.ownerCtx, job.jobId, {
+      mapping: job.mapping,
+      mode: 'UPSERT',
+      matchKey: 'ACCOUNT_NUMBER',
+    })
+
+    const reloaded = await importService.getImportPreview(org.ownerCtx, job.jobId)
+    expect(reloaded.unresolved).toHaveLength(1)
+    expect(reloaded.unresolved[0]).toMatchObject({ kind: 'route', value: 'Mystery Route' })
+  })
+
   it('assigns the route and visit day once the reference is resolved', async () => {
     const route = await db(org.ownerCtx).routeTemplate.create({
       data: { organizationId: org.organizationId, name: 'Route A', dayOfWeek: 'MONDAY' },

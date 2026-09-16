@@ -55,6 +55,12 @@ export type ValidateOptions = {
   seen: { sku: Set<string>; upc: Set<string>; accountNumber: Set<string> }
   /** Reference values the user has already resolved, e.g. { 'route:tuesday': 'id' }. */
   resolvedReferences?: Record<string, string>
+  /**
+   * What already exists, by kind and lowercased name: { route: { 'route a': id } }.
+   * Without this the validator would warn about a route the company plainly has,
+   * and every row would look like it needed a decision.
+   */
+  knownReferences?: Record<string, Record<string, string>>
 }
 
 export function validateRow(
@@ -275,7 +281,10 @@ function validateCustomer(
     if (!value) continue
     references[key] = value
 
-    const resolved = options.resolvedReferences?.[`${key}:${value.toLowerCase()}`]
+    const lowered = value.toLowerCase()
+    const resolved =
+      options.resolvedReferences?.[`${key}:${lowered}`] ?? options.knownReferences?.[key]?.[lowered]
+
     if (resolved) {
       row[`${key}Id`] = resolved
     } else {
