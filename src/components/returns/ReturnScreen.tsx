@@ -10,6 +10,7 @@ import { Field, Input, Select } from '@/components/ui/Field'
 import { Pill } from '@/components/ui/Pill'
 import { createReturnAction, type CreditState } from '@/app/(app)/credits/actions'
 import type { ReturnableLine } from '@/server/services/return.service'
+import { pluralize } from '@/server/domain/uom'
 
 const EMPTY: CreditState = {}
 
@@ -263,7 +264,8 @@ export function ReturnScreen({
                     </button>
 
                     <span className="text-xs text-ink-subtle">
-                      of {line.returnableQuantity} {line.uomLabel.toLowerCase()}
+                      of {line.returnableQuantity}{' '}
+                      {pluralize(line.returnableQuantity, line.uomLabel.toLowerCase())}
                     </span>
                   </div>
 

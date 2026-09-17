@@ -4,7 +4,8 @@ import type {
   InventoryTransactionType,
   ReturnDisposition,
 } from '@/generated/prisma/enums'
-import { db, type TenantTx } from '@/server/db/tenant'
+import { db, type TenantDb, type TenantTx } from '@/server/db/tenant'
+import type { RawCapable } from '@/server/db/tx'
 import type { AuthContext } from '@/server/auth/context'
 import { can, requirePermission } from '@/server/auth/context'
 import { conflict, notFound } from '@/lib/errors'
@@ -19,6 +20,7 @@ import {
 import { nextDocumentNumber, postInventoryTransaction } from './inventory.service'
 import { writeAudit } from './audit.service'
 import { applyCreditMemo, issueRefund, snapshotParties } from './credit.service'
+import { pluralize } from '@/server/domain/uom'
 import type { CreateReturnInput } from '@/lib/schemas/returns'
 
 /**
@@ -200,13 +202,14 @@ export async function createReturn(
   const sale = await prisma.sale.findFirst({
     where: { id: input.saleId },
     select: {
-      id: true, saleNumber: true, status: true, customerId: true,
+      id: true, saleNumber: true, status: true, customerId: true, taxJson: true,
       customer: { select: { id: true, name: true } },
       items: {
         select: {
           id: true, productId: true, productUomId: true, baseQuantity: true,
           productNameSnapshot: true, skuSnapshot: true, uomLabelSnapshot: true,
           unitPrice: true, lineSubtotal: true, discountAmount: true, taxAmount: true,
+          taxable: true, taxableAmount: true, taxRateApplied: true,
           lineTotal: true, unitCostAtSale: true,
           productUom: { select: { baseUnitsPerUom: true } },
         },
@@ -218,7 +221,6 @@ export async function createReturn(
   if (sale.status !== 'COMPLETED') throw conflict('Only a completed sale can be returned against.')
 
   const itemById = new Map(sale.items.map((item) => [item.id, item]))
-  const alreadyReturned = await returnedBySaleItem(prisma, [...itemById.keys()])
 
   // Where the goods went out from, so "restock the truck" means the truck they
   // actually left on rather than whichever one is handy today.
@@ -240,29 +242,36 @@ export async function createReturn(
   }
 
   const requestedByItem = new Map<string, number>()
-  const prepared: Prepared[] = []
-
   for (const line of input.lines) {
     const item = itemById.get(line.saleItemId)
     if (!item) throw conflict('That line is not on this sale.')
+    const perUom = Math.max(1, item.productUom.baseUnitsPerUom)
+    requestedByItem.set(item.id, (requestedByItem.get(item.id) ?? 0) + line.quantity * perUom)
+  }
 
+  const checks: ReturnableCheck[] = [...requestedByItem].map(([saleItemId, requested]) => {
+    const item = itemById.get(saleItemId)!
+    return {
+      saleItemId,
+      name: item.productNameSnapshot,
+      uomLabel: item.uomLabelSnapshot,
+      baseUnitsPerUom: Math.max(1, item.productUom.baseUnitsPerUom),
+      soldBaseQuantity: item.baseQuantity,
+      requestedBaseQuantity: requested,
+    }
+  })
+
+  // A first, unlocked check: it fails a hopeless request before any pricing
+  // work, and it is the one that usually fires. It is NOT the guard — the guard
+  // is the identical check under the row lock inside the transaction below.
+  assertReturnable(sale.saleNumber, checks, await returnedBySaleItem(prisma, [...requestedByItem.keys()]))
+
+  const prepared: Prepared[] = input.lines.map((line) => {
+    const item = itemById.get(line.saleItemId)!
     const perUom = Math.max(1, item.productUom.baseUnitsPerUom)
     const baseQuantity = line.quantity * perUom
 
-    const running = (requestedByItem.get(item.id) ?? 0) + baseQuantity
-    requestedByItem.set(item.id, running)
-
-    const returnable = remainingReturnable(item.baseQuantity, alreadyReturned.get(item.id) ?? 0)
-    if (running > returnable) {
-      // The server is the authority. A client that never renders the limit, or
-      // one crafted to ignore it, is refused here (spec §22 scenario E).
-      const left = Math.floor(returnable / perUom)
-      throw conflict(
-        `${item.productNameSnapshot}: only ${left} ${plural(item.uomLabelSnapshot, left)} can still be returned from ${sale.saleNumber}.`,
-      )
-    }
-
-    prepared.push({
+    return {
       saleItemId: item.id,
       productId: item.productId,
       productUomId: item.productUomId,
@@ -279,14 +288,17 @@ export async function createReturn(
           unitPrice: toAmountString(item.unitPrice),
           lineSubtotal: toAmountString(item.lineSubtotal),
           discountAmount: toAmountString(item.discountAmount),
+          taxable: item.taxable,
+          taxableAmount: toAmountString(item.taxableAmount),
+          taxRateApplied: item.taxRateApplied.toString(),
           taxAmount: toAmountString(item.taxAmount),
           lineTotal: toAmountString(item.lineTotal),
           unitCostAtSale: item.unitCostAtSale.toString(),
         },
         baseQuantity,
       ),
-    })
-  }
+    }
+  })
 
   const totals = totalCredit(prepared.map((p) => p.credit))
   assertCreditIdentity(prepared.map((p) => p.credit), totals)
@@ -297,6 +309,19 @@ export async function createReturn(
   const occurredAt = new Date()
 
   const outcome = await prisma.$transaction(async (tx) => {
+    // ── The guard (spec §1) ────────────────────────────────────────────────
+    // Lock the sale lines this return draws down, then count what has already
+    // come back *under that lock*. Everything above this point is advisory; a
+    // returnable quantity read outside the writing transaction is a guess, and
+    // two runners crediting the same last case would both have been told yes.
+    // Same standard as the ledger's balance rows (docs/02 §L4).
+    await lockSaleItems(tx, ctx.organizationId, [...requestedByItem.keys()])
+    assertReturnable(
+      sale.saleNumber,
+      checks,
+      await returnedBySaleItem(tx, [...requestedByItem.keys()]),
+    )
+
     const returnNumber = await nextDocumentNumber(tx, ctx.organizationId, 'RETURN')
 
     // ── Credit memo ────────────────────────────────────────────────────────
@@ -322,6 +347,10 @@ export async function createReturn(
           notes: input.notes || null,
           billToJson: parties!.billTo,
           issuerJson: parties!.issuer,
+          // The regime the ORIGINAL sale was posted under, carried across so a
+          // credit says which tax it reverses without anyone consulting the
+          // customer's settings as they stand today (docs/02 §M4).
+          taxJson: (sale.taxJson ?? undefined) as Prisma.InputJsonValue | undefined,
           items: {
             create: prepared.map((p, index) => ({
               organizationId: ctx.organizationId,
@@ -336,9 +365,14 @@ export async function createReturn(
               unitPrice: p.credit.unitPrice,
               lineSubtotal: p.credit.lineSubtotal,
               discountAmount: p.credit.discountAmount,
+              taxableAmount: p.credit.taxableAmount,
+              taxRateApplied: p.credit.taxRateApplied,
               taxAmount: p.credit.taxAmount,
               lineTotal: p.credit.lineTotal,
-              taxable: m(p.credit.taxAmount).greaterThan(0),
+              // The line's taxability as it was SOLD. Deriving it from
+              // "tax > 0" got this wrong for an exempt buyer: nothing was
+              // charged, but the goods were never non-taxable.
+              taxable: p.credit.taxable,
               // Only reversed when the goods physically came back.
               unitCostAtSale:
                 p.disposition === 'NONE' ? '0' : p.credit.unitCostAtSale,
@@ -626,20 +660,79 @@ export async function voidReturn(
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
+type ReturnableCheck = {
+  saleItemId: string
+  name: string
+  uomLabel: string
+  baseUnitsPerUom: number
+  soldBaseQuantity: number
+  requestedBaseQuantity: number
+}
+
 /**
- * "1 case", "3 cases". Deliberately naive: the UoM labels a distributor uses —
- * case, bag, tray, box, pack — all take a plain -s, and a real pluralisation
- * library would be a dependency earning nothing.
+ * The returnable-quantity rule: sold minus what has already come back.
+ *
+ * Pure, and called twice on purpose — once unlocked to fail fast, once under
+ * the sale-line lock inside the writing transaction, where it is authoritative.
+ * Sharing one function is what stops the advisory answer and the real one from
+ * drifting apart.
  */
-function plural(label: string, count: number): string {
-  const lower = label.toLowerCase()
-  if (count === 1) return lower
-  return /(s|x|ch|sh)$/.test(lower) ? `${lower}es` : `${lower}s`
+function assertReturnable(
+  saleNumber: string,
+  checks: ReturnableCheck[],
+  alreadyReturned: Map<string, number>,
+): void {
+  for (const check of checks) {
+    const returnable = remainingReturnable(
+      check.soldBaseQuantity,
+      alreadyReturned.get(check.saleItemId) ?? 0,
+    )
+    if (check.requestedBaseQuantity > returnable) {
+      // The server is the authority. A client that never renders the limit, or
+      // one crafted to ignore it, is refused here (spec §22 scenario E).
+      const left = Math.floor(returnable / check.baseUnitsPerUom)
+      throw conflict(
+        `${check.name}: only ${left} ${pluralize(left, check.uomLabel.toLowerCase())} can still be returned from ${saleNumber}.`,
+      )
+    }
+  }
+}
+
+/**
+ * Locks the sale lines a return is about to draw down.
+ *
+ * `FOR UPDATE` on the sale lines themselves rather than on the returns that
+ * reference them: the rows being counted do not exist yet, so there is nothing
+ * else for a competing transaction to collide on. Sale lines are immutable
+ * history, so the lock costs nothing but the serialisation it exists for.
+ *
+ * Ordered by id, the same discipline `postInventoryTransaction` uses on balance
+ * rows: two returns overlapping on two lines take the locks in the same order,
+ * so one waits instead of each holding what the other needs.
+ */
+async function lockSaleItems(
+  tx: RawCapable,
+  organizationId: string,
+  saleItemIds: string[],
+): Promise<void> {
+  if (saleItemIds.length === 0) return
+
+  const ordered = [...saleItemIds].sort()
+  const rows = await tx.$queryRaw<{ id: string }[]>(Prisma.sql`
+    SELECT id
+      FROM sale_item
+     WHERE organization_id = ${organizationId}
+       AND id IN (${Prisma.join(ordered)})
+     ORDER BY id
+     FOR UPDATE
+  `)
+
+  if (rows.length !== ordered.length) throw conflict('That line is not on this sale.')
 }
 
 /** Base units already returned per sale line, counting live returns only. */
 async function returnedBySaleItem(
-  prisma: ReturnType<typeof db>,
+  prisma: Pick<TenantDb | TenantTx, 'returnItem'>,
   saleItemIds: string[],
 ): Promise<Map<string, number>> {
   if (saleItemIds.length === 0) return new Map()

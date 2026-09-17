@@ -18,6 +18,19 @@ import { m, round6 } from '@/server/domain/money'
  * applied explicitly on every statement here.
  */
 
+/**
+ * Movements allowed to take stock OUT of a non-sellable hold location.
+ *
+ * Only the reversal of the posting that put it there. Goods sitting in
+ * DAMAGED_HOLD, EXPIRED_HOLD or SUPPLIER_RETURN_HOLD came back from a store and
+ * must not re-enter sellable stock by any other route — not a transfer, not an
+ * adjustment, and not a truck load. Writing them off or shipping them to the
+ * supplier is a disposal workflow that does not exist yet; when it is built, it
+ * posts its own transaction type and that type joins this set. Until then the
+ * honest behaviour is to refuse, not to let an ad-hoc transfer do it silently.
+ */
+const HOLD_RELEASING_TYPES: ReadonlySet<InventoryTransactionType> = new Set(['REVERSAL'])
+
 /** Movements that relocate stock rather than create or consume it. */
 const CONSERVING_TYPES: ReadonlySet<InventoryTransactionType> = new Set([
   'TRANSFER', 'TRUCK_LOAD', 'TRUCK_UNLOAD',
@@ -98,6 +111,7 @@ export async function postInventoryTransaction(
   }
 
   assertConservation(input)
+  await assertHoldsNotDrained(tx, organizationId, input)
 
   // Lock in a fixed order so two concurrent postings can never deadlock
   // against each other (docs/02 §I2).
@@ -287,6 +301,46 @@ async function lockBalance(
     quantity: Number(row.quantity),
     avgUnitCost: m(row.avg_unit_cost) as unknown as Prisma.Decimal,
   }
+}
+
+/**
+ * Refuses to move stock out of a hold location (docs/02 §5b R7).
+ *
+ * Here rather than in each service, because this is the single write path: a
+ * check in `transferStock` protects `transferStock`, and a check here protects
+ * every caller that will ever exist, including the ones nobody has written yet.
+ */
+async function assertHoldsNotDrained(
+  tx: RawCapable,
+  organizationId: string,
+  input: PostTransactionInput,
+): Promise<void> {
+  if (HOLD_RELEASING_TYPES.has(input.type)) return
+
+  const sources = [
+    ...new Set(input.lines.filter((l) => l.quantityDelta < 0).map((l) => l.locationId)),
+  ]
+  if (sources.length === 0) return
+
+  const held = await tx.$queryRaw<{ name: string }[]>(Prisma.sql`
+    SELECT name
+      FROM inventory_location
+     WHERE organization_id = ${organizationId}
+       AND id IN (${Prisma.join(sources)})
+       AND sellable = false
+     LIMIT 1
+  `)
+
+  const location = held[0]
+  if (!location) return
+
+  throw new AppError(
+    'CONFLICT',
+    `${location.name} is a hold location. Stock cannot be moved out of it: ` +
+      'goods held there are not sellable, and writing them off or returning ' +
+      'them to the supplier is not something SnackLoad does yet.',
+    { locationName: location.name },
+  )
 }
 
 /**

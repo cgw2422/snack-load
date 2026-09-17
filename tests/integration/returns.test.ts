@@ -3,11 +3,12 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { unsafeDb } from '@/server/db/client'
 import { db } from '@/server/db/tenant'
 import { findBalanceDrift } from '@/server/services/inventory.service'
-import { receiveStock } from '@/server/services/receiving.service'
+import { adjustStock, receiveStock, transferStock } from '@/server/services/receiving.service'
 import { createVehicle, moveTruckStock } from '@/server/services/truckload.service'
 import { checkout } from '@/server/services/sale.service'
 import { recordPayment } from '@/server/services/payment.service'
 import { createReturn, getReturnableLines, voidReturn } from '@/server/services/return.service'
+import { createReturnSchema } from '@/lib/schemas/returns'
 import { runReport, type ReportRow } from '@/server/reports'
 import { getCreditDocument, getPublicCreditDocument } from '@/server/documents/creditDocument'
 import { renderReceiptPdf } from '@/server/documents/receiptPdf'
@@ -953,6 +954,134 @@ describe('returns and credits', () => {
     expect(await db(org.ownerCtx).creditMemo.count()).toBe(1)
   })
 
+  describe('adjustment-credit idempotency', () => {
+    const adjustment = (key: string, overrides: Record<string, unknown> = {}) => ({
+      customerId,
+      reason: 'PRICING_ERROR' as const,
+      description: 'Billed at list instead of the contract price',
+      amount: '12.00',
+      financialAction: 'ACCOUNT_CREDIT' as const,
+      idempotencyKey: key,
+      ...overrides,
+    })
+
+    it('replays the credit it already posted', async () => {
+      const key = randomUUID()
+      const first = await createAdjustmentCredit(office.ctx, adjustment(key))
+      const second = await createAdjustmentCredit(office.ctx, adjustment(key))
+
+      expect(second.creditMemoId).toBe(first.creditMemoId)
+      expect(second.number).toBe(first.number)
+      expect(second.amount).toBe('12.00')
+      expect(await db(org.ownerCtx).creditMemo.count()).toBe(1)
+    })
+
+    it('posts one credit when the same key arrives twice at once', async () => {
+      // Two taps, one key, both in flight. The unique index decides; the loser
+      // reads the winner's document rather than raising an error at somebody
+      // who did nothing wrong.
+      for (let round = 0; round < 8; round++) {
+        const key = randomUUID()
+        const settled = await Promise.allSettled([
+          createAdjustmentCredit(office.ctx, adjustment(key)),
+          createAdjustmentCredit(office.ctx, adjustment(key)),
+          createAdjustmentCredit(office.ctx, adjustment(key)),
+        ])
+
+        const fulfilled = settled.filter((r) => r.status === 'fulfilled')
+        expect(
+          fulfilled,
+          `round ${round}: ${settled.map((r) => (r.status === 'rejected' ? String(r.reason) : 'ok')).join(' / ')}`,
+        ).toHaveLength(3)
+
+        const ids = new Set(
+          fulfilled.map((r) => (r as PromiseFulfilledResult<{ creditMemoId: string }>).value.creditMemoId),
+        )
+        expect(ids.size).toBe(1)
+        expect(await db(org.ownerCtx).creditMemo.count({ where: { idempotencyKey: key } })).toBe(1)
+      }
+
+      expect(await db(org.ownerCtx).creditMemo.count()).toBe(8)
+    })
+
+    it('treats a different key as a different credit', async () => {
+      const first = await createAdjustmentCredit(office.ctx, adjustment(randomUUID()))
+      const second = await createAdjustmentCredit(office.ctx, adjustment(randomUUID()))
+
+      expect(second.creditMemoId).not.toBe(first.creditMemoId)
+      expect(second.number).not.toBe(first.number)
+      expect(await db(org.ownerCtx).creditMemo.count()).toBe(2)
+    })
+
+    it('does not make two credits idempotent because their notes match', async () => {
+      // The old design hid the key in `notes`. Identical human text must never
+      // be mistaken for a retry: these are two separate goodwill credits.
+      const notes = 'Agreed with Joe on the phone — 12.00 off the last delivery'
+      const first = await createAdjustmentCredit(office.ctx, adjustment(randomUUID(), { notes }))
+      const second = await createAdjustmentCredit(office.ctx, adjustment(randomUUID(), { notes }))
+
+      expect(second.creditMemoId).not.toBe(first.creditMemoId)
+      expect(await db(org.ownerCtx).creditMemo.count()).toBe(2)
+
+      const position = await getCreditPosition(office.ctx, customerId)
+      expect(position.memoCredit).toBe('24.00')
+    })
+
+    it('keeps the key out of the accounting data', async () => {
+      const key = randomUUID()
+      const notes = 'Short-shipped two cases'
+      const credit = await createAdjustmentCredit(office.ctx, adjustment(key, { notes }))
+
+      const memo = await db(org.ownerCtx).creditMemo.findFirstOrThrow({
+        where: { id: credit.creditMemoId },
+      })
+      // The note is what the person typed, and only that.
+      expect(memo.notes).toBe(notes)
+      expect(memo.notes).not.toContain(key)
+      expect(memo.idempotencyKey).toBe(key)
+
+      // Nor does it reach the printed document.
+      const document = await getCreditDocument(office.ctx, credit.creditMemoId)
+      expect(JSON.stringify(document)).not.toContain(key)
+
+      // The audit row still reads as a credit somebody issued, not as a key.
+      const audit = await db(org.ownerCtx).auditLog.findFirstOrThrow({
+        where: { entityType: 'CreditMemo', entityId: credit.creditMemoId },
+      })
+      // It reads as what happened — who, how much, why — with no key in it.
+      expect(audit.action).toBe('credit.issued')
+      expect(audit.afterJson).toMatchObject({
+        number: credit.number,
+        amount: '12.00',
+        reason: 'PRICING_ERROR',
+        description: 'Billed at list instead of the contract price',
+        customerName: "Joe's Marathon",
+      })
+      expect(JSON.stringify(audit.afterJson)).not.toContain(key)
+    })
+
+    it('scopes the key to the organization', async () => {
+      const key = randomUUID()
+      const other = await createTestOrg()
+      try {
+        const otherOffice = await addMember(other, 'office')
+        const otherCustomer = await createCustomer(other.organizationId, 'Someone Else')
+
+        const mine = await createAdjustmentCredit(office.ctx, adjustment(key))
+        const theirs = await createAdjustmentCredit(otherOffice.ctx, {
+          ...adjustment(key),
+          customerId: otherCustomer.id,
+        })
+
+        // Same key, different tenants, two credits. A shared key space would
+        // have let one distributor's retry silently answer another's request.
+        expect(theirs.creditMemoId).not.toBe(mine.creditMemoId)
+      } finally {
+        await unsafeDb.organization.deleteMany({ where: { id: other.organizationId } })
+      }
+    })
+  })
+
   // ── §14, §21 reporting ────────────────────────────────────────────────────
 
   describe('what the reports say', () => {
@@ -1316,6 +1445,170 @@ describe('returns and credits', () => {
         Number(ledger.position.openInvoices) - Number(ledger.position.totalCredit),
         2,
       )
+    })
+  })
+
+  // ── §3 hold locations stay held ───────────────────────────────────────────
+
+  describe('goods on hold', () => {
+    async function holdSomething(disposition: 'DAMAGED' | 'EXPIRED' | 'SUPPLIER_RETURN') {
+      const sale = await sell(3)
+      const item = await firstSaleItem(sale.saleId)
+      await createReturn(office.ctx, {
+        saleId: sale.saleId,
+        reason: 'DAMAGED',
+        lines: [{ saleItemId: item.id, quantity: 2, disposition }],
+        financialAction: 'ACCOUNT_CREDIT',
+        idempotencyKey: randomUUID(),
+      })
+      const kind = `${disposition === 'SUPPLIER_RETURN' ? 'SUPPLIER_RETURN' : disposition}_HOLD` as
+        'DAMAGED_HOLD' | 'EXPIRED_HOLD' | 'SUPPLIER_RETURN_HOLD'
+      return db(org.ownerCtx).inventoryLocation.findFirstOrThrow({ where: { kind } })
+    }
+
+    it('lands in a location marked not sellable', async () => {
+      for (const disposition of ['DAMAGED', 'EXPIRED', 'SUPPLIER_RETURN'] as const) {
+        const location = await holdSomething(disposition)
+        expect(location.sellable).toBe(false)
+        expect(await balanceOf(location.id, product.id)).toBe(24)
+      }
+    })
+
+    it('cannot be transferred back into a truck', async () => {
+      const hold = await holdSomething('DAMAGED')
+
+      await expect(
+        transferStock(org.ownerCtx, {
+          fromLocationId: hold.id,
+          toLocationId: truckLocation,
+          idempotencyKey: randomUUID(),
+          lines: [{ productId: product.id, productUomId: product.caseUomId, quantity: 1 }],
+        }),
+      ).rejects.toThrow(/hold location/i)
+
+      expect(await balanceOf(hold.id, product.id)).toBe(24)
+    })
+
+    it('cannot be transferred into the warehouse either', async () => {
+      const hold = await holdSomething('EXPIRED')
+
+      await expect(
+        transferStock(org.ownerCtx, {
+          fromLocationId: hold.id,
+          toLocationId: org.warehouseLocationId,
+          idempotencyKey: randomUUID(),
+          lines: [{ productId: product.id, productUomId: product.caseUomId, quantity: 1 }],
+        }),
+      ).rejects.toThrow(/hold location/i)
+    })
+
+    it('cannot be quietly adjusted away', async () => {
+      // The disposal workflow is not built. Until it is, an adjustment is not
+      // allowed to stand in for one — that is how written-off stock turns into
+      // a number nobody can explain.
+      const hold = await holdSomething('SUPPLIER_RETURN')
+
+      await expect(
+        adjustStock(org.ownerCtx, {
+          locationId: hold.id,
+          type: 'DAMAGE',
+          notes: 'Threw them out',
+          idempotencyKey: randomUUID(),
+          lines: [{ productId: product.id, productUomId: product.caseUomId, quantity: 1 }],
+        }),
+      ).rejects.toThrow(/hold location/i)
+
+      expect(await balanceOf(hold.id, product.id)).toBe(24)
+    })
+
+    it('is not a warehouse, so it cannot load a truck', async () => {
+      const hold = await holdSomething('DAMAGED')
+      const vehicle = await db(org.ownerCtx).vehicle.findFirstOrThrow({
+        where: { locationId: truckLocation },
+      })
+
+      await expect(
+        moveTruckStock(org.ownerCtx, {
+          vehicleId: vehicle.id,
+          warehouseLocationId: hold.id,
+          direction: 'LOAD',
+          idempotencyKey: randomUUID(),
+          lines: [{ productId: product.id, productUomId: product.caseUomId, quantity: 1 }],
+        }),
+      ).rejects.toThrow(/not a warehouse|hold location/i)
+    })
+
+    it('is never the location a sale comes off', async () => {
+      await holdSomething('DAMAGED')
+
+      // Selling resolves the location server-side; it can only ever be the
+      // runner's truck or a warehouse, and a hold is neither.
+      const sale = await sell(1)
+      const transaction = await db(org.ownerCtx).inventoryTransaction.findFirstOrThrow({
+        where: { referenceId: sale.saleId },
+        include: { lines: { include: { location: true } } },
+      })
+      for (const line of transaction.lines) expect(line.location.sellable).toBe(true)
+    })
+
+    it('does let a void take the goods back out', async () => {
+      // The one sanctioned way out: reversing the posting that put them there.
+      const sale = await sell(3)
+      const item = await firstSaleItem(sale.saleId)
+      const result = await createReturn(office.ctx, {
+        saleId: sale.saleId,
+        reason: 'DAMAGED',
+        lines: [{ saleItemId: item.id, quantity: 2, disposition: 'DAMAGED' }],
+        financialAction: 'ACCOUNT_CREDIT',
+        idempotencyKey: randomUUID(),
+      })
+
+      expect(await holdBalance('DAMAGED_HOLD')).toBe(24)
+      await voidReturn(office.ctx, result.returnId, 'Logged against the wrong store')
+      expect(await holdBalance('DAMAGED_HOLD')).toBe(0)
+    })
+  })
+
+  // ── §2 return units are never smaller than the unit sold ──────────────────
+
+  describe('the unit a return comes back in', () => {
+    it('counts in the UoM the line was sold in, never below it', async () => {
+      // Sold by the case, returned by the case. Base units on the return are
+      // always a whole multiple of the sale line's units-per-UoM: there is no
+      // way to express "half a case" and no conversion that would invent one.
+      const sale = await sell(3)
+      const item = await firstSaleItem(sale.saleId)
+      const view = await getReturnableLines(runner.ctx, sale.saleId)
+
+      expect(view.lines[0].baseUnitsPerUom).toBe(12)
+      expect(view.lines[0].uomLabel).toBe('Case')
+      expect(view.lines[0].returnableQuantity).toBe(3)
+
+      const result = await createReturn(runner.ctx, {
+        saleId: sale.saleId,
+        reason: 'UNSOLD',
+        lines: [{ saleItemId: item.id, quantity: 1, disposition: 'RESTOCK_TRUCK' }],
+        financialAction: 'ACCOUNT_CREDIT',
+        idempotencyKey: randomUUID(),
+      })
+
+      const returned = await db(org.ownerCtx).returnItem.findFirstOrThrow({
+        where: { return: { id: result.returnId } },
+      })
+      expect(returned.quantity).toBe(1)
+      expect(returned.baseQuantity).toBe(12)
+      expect(returned.uomLabelSnapshot).toBe('Case')
+    })
+
+    it('rejects a fractional quantity at the schema', () => {
+      const parsed = createReturnSchema.safeParse({
+        saleId: 'sale-1',
+        reason: 'UNSOLD',
+        financialAction: 'ACCOUNT_CREDIT',
+        idempotencyKey: randomUUID(),
+        lines: [{ saleItemId: 'item-1', quantity: 0.5, disposition: 'RESTOCK_TRUCK' }],
+      })
+      expect(parsed.success).toBe(false)
     })
   })
 

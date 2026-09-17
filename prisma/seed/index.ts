@@ -11,6 +11,8 @@ import {
   nextDocumentNumber,
   postInventoryTransaction,
 } from '../../src/server/services/inventory.service'
+import { buildTaxSnapshot } from '../../src/server/domain/taxSnapshot'
+import { Prisma } from '../../src/generated/prisma/client'
 import { computeSaleTotals, assertTotalsIdentity, dueDateFor } from '../../src/server/domain/saleMath'
 import { m, round2, round6, toAmountString } from '../../src/server/domain/money'
 import { dateOnly, localDateString } from '../../src/lib/dates'
@@ -163,8 +165,15 @@ async function main() {
   })
 
   const taxRate = await unsafeDb.taxRate.create({
-    data: { organizationId, name: 'Ohio 7.25%', rate: TAX_RATE, isDefault: true },
-    select: { id: true },
+    data: {
+      organizationId,
+      name: 'Ohio 7.25%',
+      rate: TAX_RATE,
+      code: 'OH-STATE',
+      jurisdiction: 'Ohio',
+      isDefault: true,
+    },
+    select: { id: true, name: true, code: true, jurisdiction: true, rate: true },
   })
   console.log(`  Organization: ${ORG_NAME}`)
 
@@ -557,6 +566,7 @@ async function main() {
           routeStopId: stop.id,
           sellingLocationId: template.locationId,
           taxRate: TAX_RATE,
+          taxRateRow: taxRate,
           weeksAgo,
         })
 
@@ -718,6 +728,7 @@ async function createSale(args: {
   routeStopId: string
   sellingLocationId: string
   taxRate: string
+  taxRateRow: { id: string; name: string; code: string | null; jurisdiction: string | null; rate: unknown }
   weeksAgo: number
 }) {
   // Bigger accounts buy across more of the catalog, not more of one thing.
@@ -791,6 +802,17 @@ async function createSale(args: {
         total: totals.total.toString(),
         amountPaid: amountPaid.toString(),
         balanceDue: totals.total.minus(amountPaid).toString(),
+        // The same decision checkout makes, so the demo data reads like real
+        // data: settled at the stop is a sales receipt, anything else an
+        // invoice (docs/07 §2).
+        documentType: amountPaid.greaterThanOrEqualTo(totals.total)
+          ? ('SALES_RECEIPT' as const)
+          : ('INVOICE' as const),
+        taxJson: buildTaxSnapshot({
+          rate: args.taxRateRow,
+          exempt: false,
+          exemptId: null,
+        }) as unknown as Prisma.InputJsonObject,
         dueDate: dueDateFor(args.occurredAt, args.customer.terms),
         paymentTermsCode: args.customer.terms as 'COD' | 'NET7' | 'NET15' | 'NET30',
         idempotencyKey: `seed-sale-${saleNumber}`,
@@ -810,6 +832,9 @@ async function createSale(args: {
               unitPrice: computed.unitPrice.toString(),
               lineSubtotal: computed.lineSubtotal.toString(),
               discountAmount: computed.discountAmount.toString(),
+              taxable: l.product.taxable,
+              taxableAmount: (l.product.taxable ? computed.taxableBase : m(0)).toString(),
+              taxRateApplied: l.product.taxable ? args.taxRate : '0',
               taxAmount: computed.taxAmount.toString(),
               lineTotal: computed.lineTotal.toString(),
               unitCostAtSale: l.product.costPerBaseUnit,

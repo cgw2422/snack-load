@@ -84,7 +84,14 @@ export function formatQuantityLong(
   return parts.join(', ')
 }
 
-function pluralize(n: number, word: string): string {
+/**
+ * "1 case", "3 cases", "2 boxes".
+ *
+ * Deliberately naive: the UoM labels a distributor uses — case, bag, tray, box,
+ * pack — all take a plain -s or -es, and a real pluralisation library would be a
+ * dependency earning nothing. Pure, so the sell and return screens can use it.
+ */
+export function pluralize(n: number, word: string): string {
   if (Math.abs(n) === 1) return word
   if (/(s|x|z|ch|sh)$/i.test(word)) return `${word}es`
   return `${word}s`

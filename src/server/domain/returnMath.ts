@@ -21,6 +21,12 @@ export type OriginalLine = {
   unitPrice: string
   lineSubtotal: string
   discountAmount: string
+  /** Whether the line was taxable when it was sold, not whether it is today. */
+  taxable: boolean
+  /** The basis tax was charged on at the time of sale. */
+  taxableAmount: string
+  /** The rate applied at the time of sale, e.g. "0.0725". */
+  taxRateApplied: string
   taxAmount: string
   lineTotal: string
   unitCostAtSale: string
@@ -32,6 +38,11 @@ export type CreditedLine = {
   unitPrice: string
   lineSubtotal: string
   discountAmount: string
+  taxable: boolean
+  /** The share of the original taxable basis being reversed. */
+  taxableAmount: string
+  /** Carried through unchanged: a reversal uses the ORIGINAL rate, always. */
+  taxRateApplied: string
   taxAmount: string
   lineTotal: string
   unitCostAtSale: string
@@ -58,6 +69,9 @@ export function creditForReturn(original: OriginalLine, returnedBaseUnits: numbe
       unitPrice: original.unitPrice,
       lineSubtotal: toAmountString(original.lineSubtotal),
       discountAmount: toAmountString(original.discountAmount),
+      taxable: original.taxable,
+      taxableAmount: toAmountString(original.taxableAmount),
+      taxRateApplied: original.taxRateApplied,
       taxAmount: toAmountString(original.taxAmount),
       lineTotal: toAmountString(original.lineTotal),
       unitCostAtSale: original.unitCostAtSale,
@@ -71,12 +85,19 @@ export function creditForReturn(original: OriginalLine, returnedBaseUnits: numbe
   // is what keeps a reversal correct when the rate, the customer's exemption or
   // the product's taxability has changed since (spec §5).
   const tax = round2(m(original.taxAmount).times(share))
+  const taxableAmount = round2(m(original.taxableAmount).times(share))
 
   return {
     baseQuantity: returnedBaseUnits,
     unitPrice: original.unitPrice,
     lineSubtotal: toAmountString(subtotal),
     discountAmount: toAmountString(discount),
+    taxable: original.taxable,
+    taxableAmount: toAmountString(taxableAmount),
+    // The rate is NOT prorated and NOT re-looked-up. Half the goods coming back
+    // reverses half the tax at the rate that was charged, whatever the rate is
+    // today (spec §5).
+    taxRateApplied: original.taxRateApplied,
     taxAmount: toAmountString(tax),
     lineTotal: toAmountString(subtotal.minus(discount).plus(tax)),
     unitCostAtSale: original.unitCostAtSale,

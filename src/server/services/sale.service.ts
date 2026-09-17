@@ -7,6 +7,7 @@ import { m, round2, toAmountString } from '@/server/domain/money'
 import { assertTotalsIdentity, computeSaleTotals, dueDateFor } from '@/server/domain/saleMath'
 import { resolvePrice, type PriceSource } from '@/server/domain/pricing'
 import { allocateOldestFirst } from '@/server/domain/allocation'
+import { buildTaxSnapshot, type TaxSnapshot } from '@/server/domain/taxSnapshot'
 import { nextDocumentNumber, postInventoryTransaction } from './inventory.service'
 import { writeAudit } from './audit.service'
 import type { CheckoutInput, ReceiptQuery } from '@/lib/schemas/sales'
@@ -37,6 +38,10 @@ export type PricedLine = {
   taxAmount: string
   lineTotal: string
   taxable: boolean
+  /** The basis tax applies to. Carried even on an exempt sale (docs/02 §M4). */
+  taxableAmount: string
+  /** The rate actually applied to this line. Zero when exempt or non-taxable. */
+  taxRateApplied: string
   /** What is on the selling location right now, for the "only 3 left" warning. */
   available: number
 }
@@ -46,6 +51,8 @@ export type PricedCart = {
   customerName: string
   taxExempt: boolean
   taxRate: string
+  /** The regime this cart is being priced under, snapshotted onto the sale. */
+  tax: TaxSnapshot
   lines: PricedLine[]
   subtotal: string
   discountTotal: string
@@ -74,8 +81,9 @@ export async function priceCart(
   const customer = await prisma.customer.findFirst({
     where: { id: input.customerId },
     select: {
-      id: true, name: true, active: true, taxExempt: true, priceGroupId: true,
-      taxRate: { select: { rate: true } },
+      id: true, name: true, active: true, taxExempt: true, taxExemptId: true,
+      priceGroupId: true,
+      taxRate: { select: { id: true, name: true, code: true, jurisdiction: true, rate: true } },
     },
   })
   if (!customer) throw notFound('That store')
@@ -108,12 +116,24 @@ export async function priceCart(
       where: { locationId: location.id, productId: { in: productIds } },
       select: { productId: true, quantity: true },
     }),
-    prisma.taxRate.findFirst({ where: { isDefault: true }, select: { rate: true } }),
+    prisma.taxRate.findFirst({
+      where: { isDefault: true },
+      select: { id: true, name: true, code: true, jurisdiction: true, rate: true },
+    }),
   ])
 
   const uomById = new Map(uoms.map((u) => [u.id, u]))
   const onHand = new Map(balances.map((b) => [b.productId, b.quantity]))
-  const taxRate = customer.taxRate?.rate ?? defaultRate?.rate ?? m(0)
+  // The customer's own rate wins; otherwise the organization's default. Which
+  // one it was gets frozen onto the sale, so nobody has to re-run this choice
+  // against settings that have since moved (docs/02 §M4).
+  const appliedRate = customer.taxRate ?? defaultRate ?? null
+  const taxRate = appliedRate?.rate ?? m(0)
+  const taxSnapshot = buildTaxSnapshot({
+    rate: appliedRate,
+    exempt: customer.taxExempt,
+    exemptId: customer.taxExemptId,
+  })
 
   const canOverride = can(ctx, 'price:override')
 
@@ -156,6 +176,7 @@ export async function priceCart(
     customerName: customer.name,
     taxExempt: customer.taxExempt,
     taxRate: m(taxRate).toString(),
+    tax: taxSnapshot,
     sellingLocationId: location.id,
     sellingLocationName: location.name,
     lines: resolved.map((r, i) => {
@@ -176,6 +197,11 @@ export async function priceCart(
         taxAmount: toAmountString(computed.taxAmount),
         lineTotal: toAmountString(computed.lineTotal),
         taxable: r.uom.product.taxable,
+        // Zero on goods that were never taxable; the full basis on taxable
+        // goods sold to an exempt buyer, which is the figure an exemption
+        // report needs and the one today's settings would destroy.
+        taxableAmount: toAmountString(r.uom.product.taxable ? computed.taxableBase : 0),
+        taxRateApplied: r.uom.product.taxable ? m(taxSnapshot.rate).toString() : '0',
         available: onHand.get(r.line.productId) ?? 0,
       }
     }),
@@ -363,6 +389,11 @@ export async function checkout(
         dueDate,
         paymentTermsCode: customer.paymentTermsCode,
         taxExempt: cart.taxExempt,
+        // Decided here, once. Never recomputed: see the field's comment and
+        // docs/07 §2. A sale settled at the counter is a sales receipt for the
+        // rest of its life, whatever happens to it afterwards.
+        documentType: amountPaid.greaterThanOrEqualTo(total) ? 'SALES_RECEIPT' : 'INVOICE',
+        taxJson: cart.tax as unknown as Prisma.InputJsonObject,
         notes: input.notes || null,
         idempotencyKey: input.idempotencyKey,
         inventoryTransactionId: posted.transactionId,
@@ -405,6 +436,9 @@ export async function checkout(
             unitPrice: line.unitPrice,
             lineSubtotal: line.lineSubtotal,
             discountAmount: line.discountAmount,
+            taxable: line.taxable,
+            taxableAmount: line.taxableAmount,
+            taxRateApplied: line.taxRateApplied,
             taxAmount: line.taxAmount,
             lineTotal: line.lineTotal,
             unitCostAtSale: costByProduct.get(line.productId)?.toString() ?? '0',

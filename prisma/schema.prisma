@@ -439,6 +439,12 @@ model TaxRate {
   name           String
   /// e.g. 0.072500 for 7.25%
   rate           Decimal @db.Decimal(9, 6)
+  /// The accounting system's own code for this rate, where the distributor has
+  /// one — QuickBooks' TaxCode, an ERP's tax key. Never a display name.
+  code           String?
+  /// Where it applies: "OH", "Erie County, OH". Free text, because a US
+  /// distributor's jurisdictions are not worth a lookup table.
+  jurisdiction   String?
   isDefault      Boolean @default(false) @map("is_default")
   active         Boolean @default(true)
 
@@ -1183,6 +1189,21 @@ model Sale {
   taxExempt        Boolean      @default(false) @map("tax_exempt")
   notes            String?
 
+  /// Invoice or cash receipt, decided ONCE when the sale posts and never
+  /// re-derived (docs/07 §2). A sale paid in full at the counter is a sales
+  /// receipt forever; paying invoice A off next month does not turn it into
+  /// one, and crediting a sales receipt does not turn it into an invoice.
+  documentType SaleDocumentType @map("document_type")
+
+  /// The tax regime as it was at post time — rate, code, jurisdiction, the
+  /// exemption and the certificate behind it. Shape in
+  /// `src/server/domain/taxSnapshot.ts`.
+  ///
+  /// Present so that reconstructing this sale never reads the customer's
+  /// CURRENT tax settings. A store that becomes exempt in March must not change
+  /// what February's invoice says it was charged (docs/02 §M4).
+  taxJson Json? @map("tax_json")
+
   /// Minted client-side when the cart is created, so a retry after a timeout in
   /// a dead-zone store cannot bill the store twice (docs/02 §I1).
   idempotencyKey String @map("idempotency_key")
@@ -1248,6 +1269,17 @@ model SaleItem {
   unitPrice      Decimal     @map("unit_price") @db.Decimal(12, 4)
   lineSubtotal   Decimal     @map("line_subtotal") @db.Decimal(14, 4)
   discountAmount Decimal     @default(0) @map("discount_amount") @db.Decimal(14, 4)
+  /// Whether this line was taxable AT THE TIME OF SALE. A product made exempt
+  /// later must not make last quarter's invoice look mis-taxed.
+  taxable        Boolean     @default(false)
+  /// The basis tax applies to: line subtotal less discount, including this
+  /// line's share of any document discount. Zero on a line that was never
+  /// taxable. On an EXEMPT sale of taxable goods it still carries the basis —
+  /// that is the figure an exemption report asks for, and it is unrecoverable
+  /// once the customer's settings change.
+  taxableAmount  Decimal     @default(0) @map("taxable_amount") @db.Decimal(14, 4)
+  /// The rate actually applied, e.g. 0.072500. Zero when exempt or non-taxable.
+  taxRateApplied Decimal     @default(0) @map("tax_rate_applied") @db.Decimal(9, 6)
   taxAmount      Decimal     @default(0) @map("tax_amount") @db.Decimal(14, 4)
   lineTotal      Decimal     @map("line_total") @db.Decimal(14, 4)
   /// COGS is fixed at the moment of sale; later cost changes never restate a
@@ -1256,10 +1288,10 @@ model SaleItem {
   priceSource    PriceSource @default(STANDARD) @map("price_source")
   sortOrder      Int         @default(0) @map("sort_order")
 
-  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  sale         Sale         @relation(fields: [saleId], references: [id], onDelete: Cascade)
-  product      Product      @relation(fields: [productId], references: [id])
-  productUom   ProductUom   @relation(fields: [productUomId], references: [id])
+  organization Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  sale         Sale             @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  product      Product          @relation(fields: [productId], references: [id])
+  productUom   ProductUom       @relation(fields: [productUomId], references: [id])
   returnItems  ReturnItem[]
   creditItems  CreditMemoItem[]
 
@@ -1310,24 +1342,24 @@ enum DeliveryStatus {
 /// landed (docs/02 §A5). PRINT and DOWNLOAD rows carry no destination; they
 /// record that a document left the building, which is what an audit asks.
 model ReceiptDelivery {
-  id             String         @id @default(cuid())
-  organizationId String         @map("organization_id")
+  id                String          @id @default(cuid())
+  organizationId    String          @map("organization_id")
   /// Exactly one of these is set. A delivery is always of one document, and
   /// which kind it is decides how it renders (spec §10).
-  saleId         String?        @map("sale_id")
-  creditMemoId   String?        @map("credit_memo_id")
-  channel        DeliveryChannel
+  saleId            String?         @map("sale_id")
+  creditMemoId      String?         @map("credit_memo_id")
+  channel           DeliveryChannel
   /// Email address or phone number. Null for PRINT and DOWNLOAD.
-  destination    String?
-  status         DeliveryStatus @default(QUEUED)
+  destination       String?
+  status            DeliveryStatus  @default(QUEUED)
   /// Which provider handled it, so a vendor switch stays legible in history.
-  provider       String?
-  providerMessageId String?     @map("provider_message_id")
-  failureReason  String?        @map("failure_reason")
-  sentByUserId   String?        @map("sent_by_user_id")
-  shareLinkId    String?        @map("share_link_id")
-  attemptedAt    DateTime       @default(now()) @map("attempted_at")
-  completedAt    DateTime?      @map("completed_at")
+  provider          String?
+  providerMessageId String?         @map("provider_message_id")
+  failureReason     String?         @map("failure_reason")
+  sentByUserId      String?         @map("sent_by_user_id")
+  shareLinkId       String?         @map("share_link_id")
+  attemptedAt       DateTime        @default(now()) @map("attempted_at")
+  completedAt       DateTime?       @map("completed_at")
 
   organization Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   sale         Sale?             @relation(fields: [saleId], references: [id], onDelete: Cascade)
@@ -1348,20 +1380,20 @@ model ReceiptDelivery {
 /// sale — a viewer cannot walk to another receipt, another store, or another
 /// organization, because nothing here is enumerable and the lookup is by hash.
 model ReceiptShareLink {
-  id             String    @id @default(cuid())
-  organizationId String    @map("organization_id")
+  id              String    @id @default(cuid())
+  organizationId  String    @map("organization_id")
   /// Exactly one of these is set; the token grants that one document.
-  saleId         String?   @map("sale_id")
-  creditMemoId   String?   @map("credit_memo_id")
-  tokenHash      String    @unique @map("token_hash")
-  createdByUserId String?  @map("created_by_user_id")
-  createdAt      DateTime  @default(now()) @map("created_at")
+  saleId          String?   @map("sale_id")
+  creditMemoId    String?   @map("credit_memo_id")
+  tokenHash       String    @unique @map("token_hash")
+  createdByUserId String?   @map("created_by_user_id")
+  createdAt       DateTime  @default(now()) @map("created_at")
   /// Null means it does not expire. A store asking for last March's invoice in
   /// December is ordinary, so links are long-lived by default (docs/03 §7).
-  expiresAt      DateTime? @map("expires_at")
-  revokedAt      DateTime? @map("revoked_at")
-  lastViewedAt   DateTime? @map("last_viewed_at")
-  viewCount      Int       @default(0) @map("view_count")
+  expiresAt       DateTime? @map("expires_at")
+  revokedAt       DateTime? @map("revoked_at")
+  lastViewedAt    DateTime? @map("last_viewed_at")
+  viewCount       Int       @default(0) @map("view_count")
 
   organization Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   sale         Sale?             @relation(fields: [saleId], references: [id], onDelete: Cascade)
@@ -1491,6 +1523,15 @@ enum ReturnDisposition {
 
 /// What the money does. Deliberately separate from the disposition: goods and
 /// money are independent consequences of the same event (spec §3).
+/// What kind of document a posted sale IS, for anyone who has to represent it
+/// elsewhere. Fixed at post time (docs/07 §2).
+enum SaleDocumentType {
+  /// Money is owed. An accounts-receivable document plus, later, payments.
+  INVOICE
+  /// Paid in full when it posted. No receivable ever existed.
+  SALES_RECEIPT
+}
+
 enum ReturnFinancialAction {
   /// Credit issued and applied to the customer's open invoices, oldest first.
   APPLY_TO_BALANCE
@@ -1533,13 +1574,13 @@ model Return {
   total    Decimal      @default(0) @db.Decimal(14, 4)
   status   ReturnStatus @default(COMPLETED)
 
-  creditMemoId   String?  @unique @map("credit_memo_id")
-  idempotencyKey String   @map("idempotency_key")
+  creditMemoId   String?   @unique @map("credit_memo_id")
+  idempotencyKey String    @map("idempotency_key")
   notes          String?
   voidedAt       DateTime? @map("voided_at")
   voidedByUserId String?   @map("voided_by_user_id")
   voidReason     String?   @map("void_reason")
-  createdAt      DateTime @default(now()) @map("created_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   customer     Customer     @relation(fields: [customerId], references: [id])
@@ -1559,14 +1600,14 @@ model Return {
 }
 
 model ReturnItem {
-  id             String @id @default(cuid())
-  organizationId String @map("organization_id")
-  returnId       String @map("return_id")
+  id             String  @id @default(cuid())
+  organizationId String  @map("organization_id")
+  returnId       String  @map("return_id")
   /// The exact line being returned against, which is what makes the
   /// returnable-quantity guard precise rather than per-product (spec §1).
   saleItemId     String? @map("sale_item_id")
-  productId      String @map("product_id")
-  productUomId   String @map("product_uom_id")
+  productId      String  @map("product_id")
+  productUomId   String  @map("product_uom_id")
 
   productNameSnapshot String @map("product_name_snapshot")
   skuSnapshot         String @map("sku_snapshot")
@@ -1579,13 +1620,13 @@ model ReturnItem {
   /// never today's cost (spec §21, docs/02 §L5).
   unitCostAtSale Decimal @default(0) @map("unit_cost_at_sale") @db.Decimal(16, 6)
 
-  disposition  ReturnDisposition
-  reason       ReturnReason
+  disposition            ReturnDisposition
+  reason                 ReturnReason
   /// Where the goods landed. Null when the disposition is NONE.
-  locationId   String? @map("location_id")
+  locationId             String?           @map("location_id")
   /// The ledger transaction that moved them. Shared by every line in this
   /// return with the same disposition; null when nothing moved.
-  inventoryTransactionId String? @map("inventory_transaction_id")
+  inventoryTransactionId String?           @map("inventory_transaction_id")
 
   organization Organization          @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   return       Return                @relation(fields: [returnId], references: [id], onDelete: Cascade)
@@ -1613,18 +1654,18 @@ enum CreditMemoStatus {
 /// can exist without a return — a pricing correction credits money with nothing
 /// coming back.
 model CreditMemo {
-  id             String           @id @default(cuid())
-  organizationId String           @map("organization_id")
-  customerId     String           @map("customer_id")
+  id             String       @id @default(cuid())
+  organizationId String       @map("organization_id")
+  customerId     String       @map("customer_id")
   number         String
   /// The sale this credit relates to, where there is one.
-  saleId         String?          @map("sale_id")
-  issuedByUserId String?          @map("issued_by_user_id")
-  reason         ReturnReason     @default(OTHER)
+  saleId         String?      @map("sale_id")
+  issuedByUserId String?      @map("issued_by_user_id")
+  reason         ReturnReason @default(OTHER)
 
-  subtotal       Decimal @default(0) @db.Decimal(14, 4)
-  discountTotal  Decimal @default(0) @map("discount_total") @db.Decimal(14, 4)
-  taxTotal       Decimal @default(0) @map("tax_total") @db.Decimal(14, 4)
+  subtotal        Decimal          @default(0) @db.Decimal(14, 4)
+  discountTotal   Decimal          @default(0) @map("discount_total") @db.Decimal(14, 4)
+  taxTotal        Decimal          @default(0) @map("tax_total") @db.Decimal(14, 4)
   /// Total credit. `amount` is the document total; `remainingAmount` is what is
   /// still unspent after allocations and refunds.
   amount          Decimal          @db.Decimal(14, 4)
@@ -1634,10 +1675,24 @@ model CreditMemo {
   issuedAt        DateTime         @default(now()) @map("issued_at")
   notes           String?
 
+  /// Idempotency for credits raised directly, the same dedicated column every
+  /// other document carries. It is NOT accounting data: it never appears on a
+  /// document, and `notes` stays free for what a human typed.
+  ///
+  /// Null for a credit produced by a return: there the `Return` row is the
+  /// operation, and it owns the key. Postgres treats nulls as distinct, so a
+  /// thousand return-issued memos coexist under this constraint.
+  idempotencyKey String? @map("idempotency_key")
+
   /// The store and the company as they were when this credit was issued, the
   /// same snapshot a receipt carries (docs/02 §L5).
   billToJson Json? @map("bill_to_json")
   issuerJson Json? @map("issuer_json")
+
+  /// The tax regime this credit reverses, copied from the sale it credits.
+  /// Shape in `src/server/domain/taxSnapshot.ts`. Null on an adjustment credit
+  /// typed by hand, where there is no rate behind the figure.
+  taxJson Json? @map("tax_json")
 
   voidedAt       DateTime? @map("voided_at")
   voidedByUserId String?   @map("voided_by_user_id")
@@ -1658,6 +1713,7 @@ model CreditMemo {
   shareLinks   ReceiptShareLink[]
 
   @@unique([organizationId, number])
+  @@unique([organizationId, idempotencyKey])
   @@index([organizationId, customerId, status])
   @@index([organizationId, issuedAt])
   @@map("credit_memo")
@@ -1688,6 +1744,12 @@ model CreditMemoItem {
   taxAmount      Decimal @default(0) @map("tax_amount") @db.Decimal(14, 4)
   lineTotal      Decimal @default(0) @map("line_total") @db.Decimal(14, 4)
   /// True when the original line was taxed. Kept so a reversal can be explained.
+  /// The basis being reversed, prorated from the sale line the same way the
+  /// tax is. Zero on a line that was never taxable. Stored rather than derived,
+  /// because "tax of zero" and "not taxable" are different facts (docs/02 §M4).
+  taxableAmount  Decimal @default(0) @map("taxable_amount") @db.Decimal(14, 4)
+  /// The rate actually applied to this line, e.g. 0.072500. Zero when exempt.
+  taxRateApplied Decimal @default(0) @map("tax_rate_applied") @db.Decimal(9, 6)
   taxable        Boolean @default(false)
   /// Historical COGS to reverse. Zero when nothing physically came back.
   unitCostAtSale Decimal @default(0) @map("unit_cost_at_sale") @db.Decimal(16, 6)
@@ -1712,15 +1774,15 @@ enum CreditApplicationStatus {
 }
 
 model CreditMemoApplication {
-  id             String                  @id @default(cuid())
-  organizationId String                  @map("organization_id")
-  creditMemoId   String                  @map("credit_memo_id")
-  saleId         String                  @map("sale_id")
-  amount         Decimal                 @db.Decimal(14, 4)
-  status         CreditApplicationStatus @default(APPLIED)
-  appliedAt      DateTime                @default(now()) @map("applied_at")
-  appliedByUserId String?                @map("applied_by_user_id")
-  reversedAt     DateTime?               @map("reversed_at")
+  id              String                  @id @default(cuid())
+  organizationId  String                  @map("organization_id")
+  creditMemoId    String                  @map("credit_memo_id")
+  saleId          String                  @map("sale_id")
+  amount          Decimal                 @db.Decimal(14, 4)
+  status          CreditApplicationStatus @default(APPLIED)
+  appliedAt       DateTime                @default(now()) @map("applied_at")
+  appliedByUserId String?                 @map("applied_by_user_id")
+  reversedAt      DateTime?               @map("reversed_at")
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   creditMemo   CreditMemo   @relation(fields: [creditMemoId], references: [id], onDelete: Cascade)
@@ -1743,24 +1805,24 @@ enum RefundStatus {
 /// that did are different events, and collapsing them loses the cash trail. A
 /// refund draws down a credit memo's remaining balance.
 model Refund {
-  id             String        @id @default(cuid())
-  organizationId String        @map("organization_id")
-  refundNumber   String        @map("refund_number")
-  customerId     String        @map("customer_id")
-  creditMemoId   String        @map("credit_memo_id")
-  amount         Decimal       @db.Decimal(14, 4)
-  method         PaymentMethod
-  issuedAt       DateTime      @default(now()) @map("issued_at")
-  issuedByUserId String?       @map("issued_by_user_id")
+  id              String        @id @default(cuid())
+  organizationId  String        @map("organization_id")
+  refundNumber    String        @map("refund_number")
+  customerId      String        @map("customer_id")
+  creditMemoId    String        @map("credit_memo_id")
+  amount          Decimal       @db.Decimal(14, 4)
+  method          PaymentMethod
+  issuedAt        DateTime      @default(now()) @map("issued_at")
+  issuedByUserId  String?       @map("issued_by_user_id")
   /// Cheque number, card authorisation, ACH trace — whatever proves it left.
-  referenceNumber String?      @map("reference_number")
-  notes          String?
-  status         RefundStatus  @default(POSTED)
-  voidedAt       DateTime?     @map("voided_at")
-  voidedByUserId String?       @map("voided_by_user_id")
-  voidReason     String?       @map("void_reason")
-  idempotencyKey String        @map("idempotency_key")
-  createdAt      DateTime      @default(now()) @map("created_at")
+  referenceNumber String?       @map("reference_number")
+  notes           String?
+  status          RefundStatus  @default(POSTED)
+  voidedAt        DateTime?     @map("voided_at")
+  voidedByUserId  String?       @map("voided_by_user_id")
+  voidReason      String?       @map("void_reason")
+  idempotencyKey  String        @map("idempotency_key")
+  createdAt       DateTime      @default(now()) @map("created_at")
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   customer     Customer     @relation(fields: [customerId], references: [id])
@@ -1948,21 +2010,48 @@ model IntegrationConnection {
 
 /// Durable identity across systems. This table is why we never re-match on name.
 model ExternalMapping {
-  id                String              @id @default(cuid())
-  organizationId    String              @map("organization_id")
-  provider          IntegrationProvider
-  entityType        String              @map("entity_type")
-  localId           String              @map("local_id")
-  externalId        String              @map("external_id")
-  externalSyncToken String?             @map("external_sync_token")
-  lastSyncedAt      DateTime?           @map("last_synced_at")
-  createdAt         DateTime            @default(now()) @map("created_at")
-  updatedAt         DateTime            @updatedAt @map("updated_at")
+  id             String              @id @default(cuid())
+  organizationId String              @map("organization_id")
+  provider       IntegrationProvider
+
+  /// The LOCAL side of the identity: our model name and our primary key.
+  /// Never a display name, an account number or a document number — those are
+  /// all editable or re-issuable, and a mapping keyed on one silently retargets
+  /// when somebody renames a store (docs/07 §1a).
+  entityType String @map("entity_type")
+  localId    String @map("local_id")
+
+  /// Their id. Null until the first successful push: the row is created when we
+  /// decide to send, so a crash between sending and recording still leaves a
+  /// trail. Postgres treats nulls as distinct, so pending rows never collide.
+  externalId        String? @map("external_id")
+  /// QuickBooks' optimistic-concurrency token for their copy of the object.
+  externalSyncToken String? @map("external_sync_token")
+
+  status SyncStatus @default(PENDING)
+
+  /// A hash of the fields we send. Equal hash means their copy is already the
+  /// document we hold, so a re-queued push is a no-op rather than a pointless
+  /// write (docs/07 §7).
+  sourceHash String? @map("source_hash")
+
+  /// Attempted and succeeded are separate on purpose. One field cannot answer
+  /// both "when did we last try" and "when was their copy last correct", and
+  /// the gap between them is what a support call is about.
+  lastAttemptedAt DateTime? @map("last_attempted_at")
+  lastSucceededAt DateTime? @map("last_succeeded_at")
+  /// Intuit's own error text from the last failure, kept verbatim.
+  lastError       String?   @map("last_error")
+  attempts        Int       @default(0)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
   @@unique([organizationId, provider, entityType, localId])
   @@unique([organizationId, provider, entityType, externalId])
+  @@index([organizationId, provider, status])
   @@map("external_mapping")
 }
 

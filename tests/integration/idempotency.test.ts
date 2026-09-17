@@ -33,6 +33,7 @@ describe('idempotency', () => {
     subtotal: '185.50',
     total: '185.50',
     balanceDue: '0',
+    documentType: 'INVOICE' as const,
     idempotencyKey,
   })
 
@@ -59,6 +60,7 @@ describe('idempotency', () => {
         subtotal: '10.00',
         total: '10.00',
         balanceDue: '0',
+        documentType: 'INVOICE' as const,
         idempotencyKey: 'cart-4f2a-9b1c',
       },
     })

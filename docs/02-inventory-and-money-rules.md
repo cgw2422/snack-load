@@ -45,6 +45,22 @@ taxable, or the resolved rate is 0. Otherwise the rate is resolved as
 `customer.taxRate → organization default`. Jurisdiction lookup is out of scope;
 the resolution function is a single seam where a tax provider can be inserted.
 
+**A posted document never reads current tax settings.** Everything needed to
+explain its tax is frozen onto it at post time:
+
+- per line — `taxable` (was it taxable *then*), `taxableAmount` (the basis, kept
+  even at a zero rate so an exemption report has the exempted figure),
+  `taxRateApplied`, `taxAmount`;
+- per header — `taxJson`, the regime: the rate's id and name, its code and
+  jurisdiction, whether the buyer was exempt, and the certificate number that
+  justified it (`src/server/domain/taxSnapshot.ts`).
+
+"Taxed at zero" and "not taxable" are different facts and stay distinguishable.
+A rate edited from 7.25% to 7.5%, a store that registers for an exemption, a
+product that stops being taxable — none of them restate a closed period. A credit
+memo raised by a return copies the sale's regime verbatim; a hand-typed
+adjustment credit has none, because there is no rate behind the figure.
+
 ### M5 — Totals identity (asserted on every completed sale)
 ```
 lineTotal      = lineSubtotal − discountAmount + taxAmount
@@ -236,19 +252,70 @@ credit, and a pricing correction earns one with nothing coming back at all.
 | `SUPPLIER_RETURN` | `CUSTOMER_RETURN_SUPPLIER` | `SUPPLIER_RETURN_HOLD` |
 | `NONE` | — | nothing posted |
 
-### R2 — Returnable quantity is enforced on the server
+### R2 — Returnable quantity is enforced by the database
 
-`sold − Σ(returned on live returns)`, per **sale line**, recomputed inside the
-posting path. A voided return releases its units again. The UI shows the cap as
-a convenience; it is not the guard.
+`sold − Σ(returned on live returns)`, per **sale line**. A voided return releases
+its units again.
+
+The check runs **inside the posting transaction, after `SELECT … FOR UPDATE` on
+the sale lines being drawn down**, in id order — the same discipline the ledger
+uses for balance rows (L3, I2). Sale lines are immutable history, so the lock
+costs nothing but the serialisation it exists for, and it is taken on the sale
+lines rather than on returns because the rows being counted do not exist yet.
+
+The lock is taken before any document number is minted, so a refused return
+consumes no sequence value and leaves no gap.
+
+A read taken any earlier is a guess. Two runners crediting the last case at the
+same moment would both be told yes, and the store would be credited twice for
+goods it returned once. `createReturn` also runs the identical check unlocked,
+before pricing, purely to fail a hopeless request cheaply; both calls share one
+function so the advisory answer and the real one cannot drift apart.
+
+The UI shows the cap as a convenience. It is not the guard, and neither is a
+disabled button, a single-runner assumption, or a mutex inside one Node process.
+
+### R2a — A return is counted in the unit that was sold
+
+A line sold by the case comes back by the case. `ReturnItem.quantity` is a whole
+number in the sale line's UoM and `baseQuantity` is `quantity ×
+baseUnitsPerUom`, so a return is always a whole multiple of the unit sold.
+
+There is deliberately **no sub-UoM conversion**: returning 4 bags out of a
+12-bag case would have to split the case's price, its discount, its tax and its
+cost basis across units that were never priced separately (Q4 — prices attach to
+a UoM, not to the base unit), and would leave a partial case in stock that no
+UoM can describe. The schema rejects a fractional quantity, the service converts
+only upward, and the return screen's stepper moves in whole units and strips
+anything that is not a digit.
 
 ### R3 — Hold locations, not instant write-off
 
 "We took it back" and "we wrote it off" are two events. Goods with a non-sellable
 disposition land in a hold location with `sellable = false`: the ledger records
 that they physically returned, and inventory reports exclude them from on-hand
-and from value. A damaged case therefore never becomes truck stock again, and
-the shrinkage is still visible.
+and from value. The shrinkage stays visible.
+
+**Stock cannot leave a non-sellable location.** `postInventoryTransaction`
+refuses any line with a negative delta on a location where `sellable = false`,
+whatever the transaction type, with one exception: `REVERSAL`, which is how
+voiding a return sends the goods back out. The guard lives in the ledger engine
+rather than in each service, because this is the single write path — a check in
+`transferStock` protects `transferStock`, a check here protects every caller
+that will ever exist.
+
+So a damaged case cannot become truck stock again by any route:
+
+- it is not a warehouse, so `moveTruckStock` rejects it by kind;
+- it is never what `resolveSellingLocation` returns, which can only be the
+  runner's vehicle or a `WAREHOUSE`;
+- a transfer or an adjustment out of it is refused by the rule above.
+
+Writing the goods off or shipping them back to the supplier is a **disposal
+workflow that does not exist yet**. When it is built it posts its own transaction
+type, and that type joins `HOLD_RELEASING_TYPES`. Until then the honest
+behaviour is to refuse, rather than to let an ad-hoc adjustment stand in for a
+process nobody can audit.
 
 ### R4 — A credit is a proportion of what was charged
 
@@ -301,16 +368,29 @@ till.
 ## 6. Idempotency & concurrency
 
 ### I1 — Every financial write is idempotent
-`Sale`, `Payment`, `Return`, `InventoryTransaction`, `TruckLoad` each carry a
-client-supplied `idempotencyKey` (UUIDv4) with a unique index scoped to the
-organization.
+`Sale`, `Payment`, `Return`, `Refund`, `CreditMemo`, `InventoryTransaction`,
+`TruckLoad` each carry a client-supplied `idempotencyKey` (UUIDv4) in a
+**dedicated column** with a unique index scoped to the organization.
+
+A dedicated column, never a marker inside a text field. A key hidden in `notes`
+is accounting data a user can see and edit, it survives into printed documents
+and audit rows, and it makes two credits carrying the same human note look like
+a retry of one. `notes` is what a person typed and nothing else.
+
+`CreditMemo.idempotencyKey` is null for a credit raised by a return: there the
+`Return` row is the operation and owns the key. Postgres treats nulls as
+distinct, so return-issued memos never collide under the constraint.
 
 The key is minted when the **cart is created**, not when submit is pressed — so a
 retry after a timeout in a dead-zone store reuses the same key.
 
-Replay behaviour: the insert hits the unique constraint, the service catches it,
-loads the existing record, and returns it with `replayed: true`. The caller sees a
-success and the store is billed once.
+Replay behaviour: the service reads by key first and returns the existing record
+with `replayed: true`. When two requests carrying one key are in flight together
+that read finds nothing in either, so the **unique index** decides: Postgres makes
+the loser wait on the winner's row and rejects it only once the winner has
+committed, at which point the loser reads the winner's document and returns it.
+One document is posted, the caller cannot tell which request created it, and
+nobody sees an error for doing nothing wrong.
 
 ### I2 — Ordering prevents deadlock
 Any statement that locks multiple rows does so in a deterministic order
