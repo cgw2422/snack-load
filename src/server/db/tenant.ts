@@ -28,7 +28,7 @@ export const TENANT_MODELS = [
   'Receiving', 'ReceivingItem', 'TruckLoad', 'TruckLoadItem',
   'RouteTemplate', 'CustomerSchedule', 'Route', 'RouteStop',
   'RouteAssignmentHistory', 'RouteCloseout', 'RouteCloseoutItem',
-  'Sale', 'SaleItem', 'Receipt', 'Signature',
+  'Sale', 'SaleItem', 'Receipt', 'ReceiptDelivery', 'ReceiptShareLink', 'Signature',
   'Payment', 'PaymentAllocation',
   'Return', 'ReturnItem', 'CreditMemo', 'CreditMemoApplication',
   'DocumentSequence',
@@ -44,7 +44,7 @@ const TENANT_MODEL_SET: ReadonlySet<string> = new Set(TENANT_MODELS)
  * reversing, and deactivating are the supported paths; `delete` is not one.
  */
 export const UNDELETABLE_MODELS: ReadonlySet<string> = new Set([
-  'Sale', 'SaleItem', 'Receipt', 'Payment', 'PaymentAllocation',
+  'Sale', 'SaleItem', 'Receipt', 'ReceiptDelivery', 'Payment', 'PaymentAllocation',
   'Return', 'ReturnItem', 'CreditMemo', 'CreditMemoApplication',
   'InventoryTransaction', 'InventoryTransactionLine', 'AuditLog',
 ])

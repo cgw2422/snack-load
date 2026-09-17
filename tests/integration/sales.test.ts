@@ -5,11 +5,11 @@ import { db } from '@/server/db/tenant'
 import { findBalanceDrift } from '@/server/services/inventory.service'
 import { receiveStock } from '@/server/services/receiving.service'
 import { createVehicle, moveTruckStock } from '@/server/services/truckload.service'
+import { getReceiptDocument } from '@/server/documents/receiptDocument'
 import {
   checkout,
   getOpenInvoices,
   getRepeatLines,
-  getSaleForReceipt,
   listSales,
   priceCart,
   voidSale,
@@ -216,8 +216,8 @@ describe('sales', () => {
         data: { name: 'Renamed Entirely' },
       })
 
-      const receipt = await getSaleForReceipt(org.ownerCtx, sale.saleId)
-      expect(receipt.items[0].name).toBe('Takis Fuego')
+      const receipt = await getReceiptDocument(org.ownerCtx, sale.saleId)
+      expect(receipt.lines[0].name).toBe('Takis Fuego')
     })
 
     it('leaves a balance when the store pays part of it', async () => {
@@ -310,7 +310,7 @@ describe('sales', () => {
         signature: { signerName: 'Joe Bianchi', imageDataUrl: tinyPng },
       })
 
-      const receipt = await getSaleForReceipt(org.ownerCtx, sale.saleId)
+      const receipt = await getReceiptDocument(org.ownerCtx, sale.saleId)
       expect(receipt.signature?.signerName).toBe('Joe Bianchi')
     })
 
@@ -320,11 +320,11 @@ describe('sales', () => {
         payment: { method: 'CHECK', amount: '58.50', checkNumber: '1042' },
       })
 
-      const receipt = await getSaleForReceipt(org.ownerCtx, sale.saleId)
+      const receipt = await getReceiptDocument(org.ownerCtx, sale.saleId)
       expect(receipt.soldByName).toBe('Mike Donnelly')
       expect(receipt.payments[0]).toMatchObject({ method: 'CHECK', reference: '1042' })
 
-      const lineSum = receipt.items.reduce((n, i) => n + Number(i.lineTotal), 0)
+      const lineSum = receipt.lines.reduce((n, i) => n + Number(i.lineTotal), 0)
       expect(lineSum.toFixed(2)).toBe(receipt.total)
     })
 
@@ -333,7 +333,7 @@ describe('sales', () => {
       const sale = await checkout(runner.ctx, {
         customerId, lines: cartLines(1), idempotencyKey: randomUUID(),
       })
-      await expect(getSaleForReceipt(other.ctx, sale.saleId)).rejects.toThrow(/not found/i)
+      await expect(getReceiptDocument(other.ctx, sale.saleId)).rejects.toThrow(/not found/i)
     })
   })
 
@@ -358,9 +358,9 @@ describe('sales', () => {
       })
       await voidSale(org.ownerCtx, sale.saleId, 'Mistake')
 
-      const receipt = await getSaleForReceipt(org.ownerCtx, sale.saleId)
+      const receipt = await getReceiptDocument(org.ownerCtx, sale.saleId)
       expect(receipt.status).toBe('VOIDED')
-      expect(receipt.items).toHaveLength(1)
+      expect(receipt.lines).toHaveLength(1)
     })
 
     it('returns money taken on the sale to the payment as credit', async () => {

@@ -9,7 +9,8 @@ import { resolvePrice, type PriceSource } from '@/server/domain/pricing'
 import { allocateOldestFirst } from '@/server/domain/allocation'
 import { nextDocumentNumber, postInventoryTransaction } from './inventory.service'
 import { writeAudit } from './audit.service'
-import type { CheckoutInput } from '@/lib/schemas/sales'
+import type { CheckoutInput, ReceiptQuery } from '@/lib/schemas/sales'
+import { dateOnly, endOfDayInZone, startOfDayInZone } from '@/lib/dates'
 
 /**
  * Selling at the store (spec §22).
@@ -204,6 +205,36 @@ export type CheckoutResult = {
  * balance, the signature, the audit row, and the stop's outcome. Either all of
  * it happened or none of it did.
  */
+/**
+ * Flattens a store or company into the shape a receipt header needs. Stored on
+ * the sale as JSON, never read back through a relation, so later edits to the
+ * source row cannot reach a document that has already been issued.
+ */
+function snapshotParty(input: {
+  name: string
+  subtitle: string | null
+  addressLine1: string | null
+  addressLine2: string | null
+  city: string | null
+  state: string | null
+  postalCode: string | null
+  phone: string | null
+  email: string | null
+}): { name: string; subtitle: string | null; addressLines: string[]; phone: string | null; email: string | null } {
+  const cityLine = [input.city, input.state].filter(Boolean).join(', ')
+  return {
+    name: input.name,
+    subtitle: input.subtitle,
+    addressLines: [
+      input.addressLine1,
+      input.addressLine2,
+      [cityLine, input.postalCode].filter(Boolean).join(' '),
+    ].filter((line): line is string => Boolean(line && line.trim())),
+    phone: input.phone,
+    email: input.email,
+  }
+}
+
 export async function checkout(
   ctx: AuthContext,
   input: CheckoutInput,
@@ -244,9 +275,25 @@ export async function checkout(
 
   const customer = await prisma.customer.findFirst({
     where: { id: input.customerId },
-    select: { id: true, name: true, paymentTermsCode: true },
+    select: {
+      id: true, name: true, paymentTermsCode: true, accountNumber: true,
+      addressLine1: true, addressLine2: true, city: true, state: true,
+      postalCode: true, phone: true, email: true,
+    },
   })
   if (!customer) throw notFound('That store')
+
+  // The header is snapshotted alongside the line items: a store that moves, or
+  // a company that rebrands, must not rewrite the receipts already delivered
+  // (docs/02 §L5).
+  const issuer = await prisma.organization.findFirstOrThrow({
+    where: { id: ctx.organizationId },
+    select: {
+      name: true, legalName: true, phone: true, email: true, logoUrl: true,
+      receiptFooter: true, addressLine1: true, addressLine2: true, city: true,
+      state: true, postalCode: true,
+    },
+  })
 
   const occurredAt = new Date()
   const amountPaid = round2(input.payment?.amount ?? 0)
@@ -319,6 +366,32 @@ export async function checkout(
         notes: input.notes || null,
         idempotencyKey: input.idempotencyKey,
         inventoryTransactionId: posted.transactionId,
+        billToJson: snapshotParty({
+          name: customer.name,
+          subtitle: `#${customer.accountNumber}`,
+          addressLine1: customer.addressLine1,
+          addressLine2: customer.addressLine2,
+          city: customer.city,
+          state: customer.state,
+          postalCode: customer.postalCode,
+          phone: customer.phone,
+          email: customer.email,
+        }),
+        issuerJson: {
+          ...snapshotParty({
+            name: issuer.name,
+            subtitle: issuer.legalName,
+            addressLine1: issuer.addressLine1,
+            addressLine2: issuer.addressLine2,
+            city: issuer.city,
+            state: issuer.state,
+            postalCode: issuer.postalCode,
+            phone: issuer.phone,
+            email: issuer.email,
+          }),
+          logoUrl: issuer.logoUrl,
+          footer: issuer.receiptFooter,
+        },
         items: {
           create: cart.lines.map((line, index) => ({
             organizationId: ctx.organizationId,
@@ -553,104 +626,6 @@ function decodeDataUrl(dataUrl: string): Uint8Array<ArrayBuffer> {
 
 export type { Prisma }
 
-/** Everything the receipt needs, in one read. */
-export async function getSaleForReceipt(ctx: AuthContext, saleId: string) {
-  const prisma = db(ctx)
-
-  const sale = await prisma.sale.findFirst({
-    where: { id: saleId },
-    select: {
-      id: true, saleNumber: true, status: true, occurredAt: true, notes: true,
-      subtotal: true, discountTotal: true, taxTotal: true, total: true,
-      amountPaid: true, balanceDue: true, dueDate: true, paymentTermsCode: true,
-      soldByUserId: true,
-      customer: {
-        select: {
-          id: true, name: true, accountNumber: true,
-          addressLine1: true, city: true, state: true, postalCode: true, phone: true,
-        },
-      },
-      soldBy: { select: { firstName: true, lastName: true } },
-      items: {
-        orderBy: { sortOrder: 'asc' },
-        select: {
-          id: true, productNameSnapshot: true, skuSnapshot: true, uomLabelSnapshot: true,
-          quantity: true, unitPrice: true, lineSubtotal: true, discountAmount: true,
-          taxAmount: true, lineTotal: true,
-        },
-      },
-      receipt: { select: { receiptNumber: true, issuedAt: true } },
-      signature: { select: { signerName: true, capturedAt: true } },
-      paymentAllocations: {
-        select: {
-          amount: true,
-          payment: { select: { method: true, checkNumber: true, referenceNumber: true } },
-        },
-      },
-    },
-  })
-  if (!sale) throw notFound('That receipt')
-
-  // A runner may see their own sales; anyone else needs the org-wide read.
-  if (!can(ctx, 'sale:read') && sale.soldByUserId !== ctx.userId) {
-    throw notFound('That receipt')
-  }
-
-  return {
-    id: sale.id,
-    saleNumber: sale.saleNumber,
-    receiptNumber: sale.receipt?.receiptNumber ?? sale.saleNumber,
-    status: sale.status,
-    occurredAt: sale.occurredAt.toISOString(),
-    notes: sale.notes,
-    customer: {
-      id: sale.customer.id,
-      name: sale.customer.name,
-      accountNumber: sale.customer.accountNumber,
-      addressLine: [
-        sale.customer.addressLine1,
-        [sale.customer.city, sale.customer.state].filter(Boolean).join(', '),
-        sale.customer.postalCode,
-      ]
-        .filter(Boolean)
-        .join(' · '),
-      phone: sale.customer.phone,
-    },
-    soldByName: `${sale.soldBy.firstName} ${sale.soldBy.lastName}`.trim(),
-    items: sale.items.map((item) => ({
-      id: item.id,
-      name: item.productNameSnapshot,
-      sku: item.skuSnapshot,
-      uomLabel: item.uomLabelSnapshot,
-      quantity: item.quantity,
-      unitPrice: toAmountString(item.unitPrice),
-      lineSubtotal: toAmountString(item.lineSubtotal),
-      discountAmount: toAmountString(item.discountAmount),
-      taxAmount: toAmountString(item.taxAmount),
-      lineTotal: toAmountString(item.lineTotal),
-    })),
-    subtotal: toAmountString(sale.subtotal),
-    discountTotal: toAmountString(sale.discountTotal),
-    taxTotal: toAmountString(sale.taxTotal),
-    total: toAmountString(sale.total),
-    amountPaid: toAmountString(sale.amountPaid),
-    balanceDue: toAmountString(sale.balanceDue),
-    dueDate: sale.dueDate?.toISOString() ?? null,
-    paymentTermsCode: sale.paymentTermsCode,
-    payments: sale.paymentAllocations
-      .filter((a) => Number(a.amount) > 0)
-      .map((a) => ({
-        method: a.payment.method,
-        amount: toAmountString(a.amount),
-        reference: a.payment.checkNumber ?? a.payment.referenceNumber,
-      })),
-    signature: sale.signature
-      ? { signerName: sale.signature.signerName, capturedAt: sale.signature.capturedAt.toISOString() }
-      : null,
-  }
-}
-
-export type ReceiptView = Awaited<ReturnType<typeof getSaleForReceipt>>
 
 /**
  * Open AR for one customer, used by the payment screen and the receipt.
@@ -741,29 +716,34 @@ export async function getRepeatLines(ctx: AuthContext, saleId: string) {
 }
 
 /**
- * The receipt book. A runner without the org-wide `sale:read` sees only their
- * own sales — the scoping is in the `where` clause, never in the UI
- * (docs/04 §3).
+ * The receipt book (spec §25).
+ *
+ * Filters by store, date range, payment state and amount, and searches receipt
+ * numbers and store names. Everything narrows the `where` clause: a runner
+ * without the org-wide `sale:read` gets `soldByUserId` added to the query, not
+ * a filter applied to rows already fetched (docs/04 §3).
  */
-export async function listSales(
-  ctx: AuthContext,
-  query: { search?: string; page?: number; pageSize?: number } = {},
-) {
+export async function listSales(ctx: AuthContext, query: Partial<ReceiptQuery> = {}) {
   if (!can(ctx, 'sale:read') && !can(ctx, 'sale:read_own')) {
     requirePermission(ctx, 'sale:read')
   }
 
   const prisma = db(ctx)
   const page = Math.max(1, query.page ?? 1)
-  const pageSize = Math.min(100, Math.max(1, query.pageSize ?? 25))
+  const pageSize = Math.min(200, Math.max(1, query.pageSize ?? 25))
   const search = query.search?.trim()
 
   const where: Prisma.SaleWhereInput = {
     ...(can(ctx, 'sale:read') ? {} : { soldByUserId: ctx.userId }),
+    ...(query.customerId ? { customerId: query.customerId } : {}),
+    ...occurredBetween(query.from, query.to, ctx.organization.timezone),
+    ...amountBetween(query.minAmount, query.maxAmount),
+    ...paymentState(query.status ?? 'all'),
     ...(search
       ? {
           OR: [
             { saleNumber: { contains: search, mode: 'insensitive' } },
+            { receipt: { receiptNumber: { contains: search, mode: 'insensitive' } } },
             { customer: { name: { contains: search, mode: 'insensitive' } } },
             { customer: { accountNumber: { contains: search, mode: 'insensitive' } } },
           ],
@@ -771,36 +751,90 @@ export async function listSales(
       : {}),
   }
 
-  const [rows, total] = await Promise.all([
+  const [rows, total, totals] = await Promise.all([
     prisma.sale.findMany({
       where,
       orderBy: { occurredAt: 'desc' },
       skip: (page - 1) * pageSize,
       take: pageSize,
       select: {
-        id: true, saleNumber: true, status: true, occurredAt: true,
+        id: true, saleNumber: true, status: true, occurredAt: true, dueDate: true,
         total: true, balanceDue: true,
-        customer: { select: { name: true } },
+        customer: { select: { id: true, name: true } },
         soldBy: { select: { firstName: true, lastName: true } },
+        receipt: { select: { receiptNumber: true, emailedAt: true, textedAt: true } },
       },
     }),
     prisma.sale.count({ where }),
+    // Summed over the whole filtered set, not the page: "what did this store
+    // buy in August" is the question a filter is usually asking.
+    prisma.sale.aggregate({ where, _sum: { total: true, balanceDue: true } }),
   ])
 
   return {
     items: rows.map((sale) => ({
       id: sale.id,
       saleNumber: sale.saleNumber,
+      receiptNumber: sale.receipt?.receiptNumber ?? sale.saleNumber,
       status: sale.status,
       occurredAt: sale.occurredAt.toISOString(),
+      dueDate: sale.dueDate?.toISOString() ?? null,
+      customerId: sale.customer.id,
       customerName: sale.customer.name,
       soldByName: `${sale.soldBy.firstName} ${sale.soldBy.lastName}`.trim(),
       total: toAmountString(sale.total),
       balanceDue: toAmountString(sale.balanceDue),
+      delivered: Boolean(sale.receipt?.emailedAt || sale.receipt?.textedAt),
     })),
     total,
     page,
     pageCount: Math.max(1, Math.ceil(total / pageSize)),
+    sumTotal: toAmountString(totals._sum.total ?? 0),
+    sumBalanceDue: toAmountString(totals._sum.balanceDue ?? 0),
+  }
+}
+
+export type SaleListItem = Awaited<ReturnType<typeof listSales>>['items'][number]
+
+/** Calendar days in the company's zone, not the server's. */
+function occurredBetween(
+  from: string | undefined,
+  to: string | undefined,
+  timeZone: string,
+): Prisma.SaleWhereInput {
+  if (!from && !to) return {}
+  return {
+    occurredAt: {
+      ...(from ? { gte: startOfDayInZone(dateOnly(from), timeZone) } : {}),
+      ...(to ? { lte: endOfDayInZone(dateOnly(to), timeZone) } : {}),
+    },
+  }
+}
+
+function amountBetween(min: string | undefined, max: string | undefined): Prisma.SaleWhereInput {
+  if (!min && !max) return {}
+  return {
+    total: {
+      ...(min ? { gte: min } : {}),
+      ...(max ? { lte: max } : {}),
+    },
+  }
+}
+
+function paymentState(status: ReceiptQuery['status']): Prisma.SaleWhereInput {
+  switch (status) {
+    case 'paid':
+      return { status: 'COMPLETED', balanceDue: { lte: 0 } }
+    case 'open':
+      return { status: 'COMPLETED', balanceDue: { gt: 0 } }
+    case 'overdue':
+      // A due date in the past with money still on it. Sales with no due date
+      // are COD and are never "overdue" — they were due at the counter.
+      return { status: 'COMPLETED', balanceDue: { gt: 0 }, dueDate: { lt: new Date() } }
+    case 'voided':
+      return { status: 'VOIDED' }
+    default:
+      return {}
   }
 }
 

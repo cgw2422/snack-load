@@ -225,7 +225,19 @@ export default async function CustomerPage(props: PageProps<'/customers/[id]'>) 
       ) : null}
 
       <Card>
-        <CardHeader title="Recent orders" />
+        <CardHeader
+          title="Recent orders"
+          action={
+            can(ctx, 'sale:read') || can(ctx, 'sale:read_own') ? (
+              <Link
+                href={`/customers/${customer.id}/receipts`}
+                className="text-sm font-semibold text-navy-700 hover:text-navy-800"
+              >
+                Full history
+              </Link>
+            ) : null
+          }
+        />
         {customer.recentSales.length === 0 ? (
           <p className="px-4 pb-4 text-sm text-ink-muted">No orders yet.</p>
         ) : (

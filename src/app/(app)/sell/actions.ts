@@ -8,6 +8,11 @@ import { requireAuth } from '@/server/auth/context'
 import { checkout, priceCart, voidSale } from '@/server/services/sale.service'
 import type { PricedCart } from '@/server/services/sale.service'
 import { recordPayment } from '@/server/services/payment.service'
+import {
+  emailReceipt,
+  shareLinkForReceipt,
+  textReceipt,
+} from '@/server/services/delivery.service'
 
 export type SellState = {
   error?: string
@@ -138,5 +143,60 @@ export async function voidSaleAction(_prev: SellState, formData: FormData): Prom
     return { message: 'Sale voided. Stock has gone back and the balance is cleared.' }
   } catch (error) {
     return toState(error, 'That sale could not be voided.')
+  }
+}
+
+/** Emails the receipt. A failure is reported; the sale is never touched. */
+export async function emailReceiptAction(
+  _prev: SellState,
+  formData: FormData,
+): Promise<SellState> {
+  try {
+    const ctx = await requireAuth()
+    const saleId = String(formData.get('saleId') ?? '')
+    const to = String(formData.get('to') ?? '').trim()
+    const message = String(formData.get('message') ?? '').trim()
+
+    const result = await emailReceipt(ctx, { saleId, to: to || null, message: message || null })
+    revalidatePath(`/receipts/${saleId}`)
+
+    return result.status === 'SENT'
+      ? { message: `Emailed to ${result.destination}.` }
+      : { error: result.failureReason ?? 'That email could not be sent.' }
+  } catch (error) {
+    return toState(error, 'That email could not be sent.')
+  }
+}
+
+/** Texts a link to the receipt. Same contract: a failure is only a failure. */
+export async function textReceiptAction(
+  _prev: SellState,
+  formData: FormData,
+): Promise<SellState> {
+  try {
+    const ctx = await requireAuth()
+    const saleId = String(formData.get('saleId') ?? '')
+    const to = String(formData.get('to') ?? '').trim()
+
+    const result = await textReceipt(ctx, { saleId, to: to || null })
+    revalidatePath(`/receipts/${saleId}`)
+
+    return result.status === 'SENT'
+      ? { message: `Texted to ${result.destination}.` }
+      : { error: result.failureReason ?? 'That text could not be sent.' }
+  } catch (error) {
+    return toState(error, 'That text could not be sent.')
+  }
+}
+
+/** Mints a shareable link for the copy button and the native share sheet. */
+export async function shareLinkAction(saleId: string): Promise<{ url?: string; error?: string }> {
+  try {
+    const ctx = await requireAuth()
+    const { shareUrl } = await shareLinkForReceipt(ctx, saleId)
+    revalidatePath(`/receipts/${saleId}`)
+    return { url: shareUrl }
+  } catch (error) {
+    return { error: toState(error, 'That link could not be created.').error }
   }
 }

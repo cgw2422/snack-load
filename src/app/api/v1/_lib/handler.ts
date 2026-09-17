@@ -54,3 +54,25 @@ export function csvResponse(body: string, fileName: string): NextResponse {
     },
   })
 }
+
+/**
+ * A generated document. `attachment` makes the browser save it; inline lets the
+ * viewer render it in place, which is what the share sheet's preview wants.
+ */
+export function fileResponse(
+  body: Uint8Array,
+  fileName: string,
+  contentType: string,
+  disposition: 'attachment' | 'inline' = 'attachment',
+): NextResponse {
+  return new NextResponse(body as BodyInit, {
+    headers: {
+      'Content-Type': contentType,
+      'Content-Disposition': `${disposition}; filename="${fileName}"`,
+      'Content-Length': String(body.byteLength),
+      // Receipts carry customer data and can be voided after the fact; a cached
+      // copy in a shared proxy is not worth the convenience.
+      'Cache-Control': 'private, no-store',
+    },
+  })
+}

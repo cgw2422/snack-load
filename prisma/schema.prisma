@@ -88,6 +88,8 @@ model Organization {
   sales                  Sale[]
   saleItems              SaleItem[]
   receipts               Receipt[]
+  receiptDeliveries      ReceiptDelivery[]
+  receiptShareLinks      ReceiptShareLink[]
   signatures             Signature[]
   payments               Payment[]
   paymentAllocations     PaymentAllocation[]
@@ -144,6 +146,8 @@ model User {
   truckLoadsRun         TruckLoad[]              @relation("TruckLoadRunner")
   salesSold             Sale[]                   @relation("SaleSeller")
   salesVoided           Sale[]                   @relation("SaleVoider")
+  receiptDeliveries     ReceiptDelivery[]        @relation("DeliverySender")
+  receiptShareLinks     ReceiptShareLink[]       @relation("ShareLinkCreator")
   paymentsReceived      Payment[]                @relation("PaymentReceiver")
   paymentsReversed      Payment[]                @relation("PaymentReverser")
   returnsCreated        Return[]                 @relation("ReturnCreator")
@@ -1152,6 +1156,16 @@ model Sale {
   /// a dead-zone store cannot bill the store twice (docs/02 §I1).
   idempotencyKey String @map("idempotency_key")
 
+  /// The store and the company AS THEY WERE when this sale posted.
+  ///
+  /// Line items already snapshot their product name, unit and price; these two
+  /// finish the job for the header. A receipt reprinted next year has to show
+  /// the address the goods went to and the company name that billed for them,
+  /// not whatever those records say today (docs/02 §L5). Null on sales written
+  /// before this column existed — readers fall back to the live rows.
+  billToJson Json? @map("bill_to_json")
+  issuerJson Json? @map("issuer_json")
+
   inventoryTransactionId String?   @unique @map("inventory_transaction_id")
   voidedAt               DateTime? @map("voided_at")
   voidedByUserId         String?   @map("voided_by_user_id")
@@ -1168,6 +1182,8 @@ model Sale {
   transaction        InventoryTransaction?   @relation(fields: [inventoryTransactionId], references: [id])
   items              SaleItem[]
   receipt            Receipt?
+  deliveries         ReceiptDelivery[]
+  shareLinks         ReceiptShareLink[]
   signature          Signature?
   paymentAllocations PaymentAllocation[]
   creditApplications CreditMemoApplication[]
@@ -1237,6 +1253,82 @@ model Receipt {
 
   @@unique([organizationId, receiptNumber])
   @@map("receipt")
+}
+
+enum DeliveryChannel {
+  EMAIL
+  SMS
+  LINK
+  PRINT
+  DOWNLOAD
+}
+
+enum DeliveryStatus {
+  QUEUED
+  SENT
+  FAILED
+}
+
+/// Every attempt to put a receipt in front of a customer (spec §25).
+///
+/// Append-only. A failed send writes a FAILED row and nothing else — it must
+/// never touch the sale, because the money moved whether or not the email
+/// landed (docs/02 §A5). PRINT and DOWNLOAD rows carry no destination; they
+/// record that a document left the building, which is what an audit asks.
+model ReceiptDelivery {
+  id             String         @id @default(cuid())
+  organizationId String         @map("organization_id")
+  saleId         String         @map("sale_id")
+  channel        DeliveryChannel
+  /// Email address or phone number. Null for PRINT and DOWNLOAD.
+  destination    String?
+  status         DeliveryStatus @default(QUEUED)
+  /// Which provider handled it, so a vendor switch stays legible in history.
+  provider       String?
+  providerMessageId String?     @map("provider_message_id")
+  failureReason  String?        @map("failure_reason")
+  sentByUserId   String?        @map("sent_by_user_id")
+  shareLinkId    String?        @map("share_link_id")
+  attemptedAt    DateTime       @default(now()) @map("attempted_at")
+  completedAt    DateTime?      @map("completed_at")
+
+  organization Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  sale         Sale              @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  sentBy       User?             @relation("DeliverySender", fields: [sentByUserId], references: [id])
+  shareLink    ReceiptShareLink? @relation(fields: [shareLinkId], references: [id])
+
+  @@index([organizationId, saleId, attemptedAt])
+  @@index([organizationId, status, attemptedAt])
+  @@map("receipt_delivery")
+}
+
+/// A capability URL for one receipt (spec §25).
+///
+/// The token is 32 random bytes and is stored only as a sha256 digest, so a
+/// database leak does not hand out working links. The row grants exactly one
+/// sale — a viewer cannot walk to another receipt, another store, or another
+/// organization, because nothing here is enumerable and the lookup is by hash.
+model ReceiptShareLink {
+  id             String    @id @default(cuid())
+  organizationId String    @map("organization_id")
+  saleId         String    @map("sale_id")
+  tokenHash      String    @unique @map("token_hash")
+  createdByUserId String?  @map("created_by_user_id")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  /// Null means it does not expire. A store asking for last March's invoice in
+  /// December is ordinary, so links are long-lived by default (docs/03 §7).
+  expiresAt      DateTime? @map("expires_at")
+  revokedAt      DateTime? @map("revoked_at")
+  lastViewedAt   DateTime? @map("last_viewed_at")
+  viewCount      Int       @default(0) @map("view_count")
+
+  organization Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  sale         Sale              @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  createdBy    User?             @relation("ShareLinkCreator", fields: [createdByUserId], references: [id])
+  deliveries   ReceiptDelivery[]
+
+  @@index([organizationId, saleId])
+  @@map("receipt_share_link")
 }
 
 model Signature {

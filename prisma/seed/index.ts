@@ -80,6 +80,15 @@ function daysAgo(n: number): Date {
   return d
 }
 
+/** A plausible, deliberately undeliverable address for a demo store. */
+function storeEmail(name: string): string {
+  const slug = name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '')
+    .slice(0, 24)
+  return `orders@${slug || 'store'}.demo`
+}
+
 const WEEKDAY_INDEX: Record<string, number> = {
   SUNDAY: 0, MONDAY: 1, TUESDAY: 2, WEDNESDAY: 3, THURSDAY: 4, FRIDAY: 5, SATURDAY: 6,
 }
@@ -353,12 +362,22 @@ async function main() {
         latitude: c.latitude.toString(),
         longitude: c.longitude.toString(),
         phone: c.phone,
+        // Every store has an address on file so the receipt-delivery workflow
+        // has something to demonstrate. `.demo` is reserved and unroutable, so
+        // a misconfigured provider cannot mail a stranger.
+        email: storeEmail(c.name),
         paymentTermsCode: c.terms,
         creditLimit: c.creditLimit?.toString() ?? null,
         taxRateId: taxRate.id,
         notes: c.notes ?? null,
         contacts: {
-          create: { organizationId, name: c.contactName, phone: c.phone, isPrimary: true },
+          create: {
+            organizationId,
+            name: c.contactName,
+            phone: c.phone,
+            email: storeEmail(c.name),
+            isPrimary: true,
+          },
         },
         schedules: {
           create: {

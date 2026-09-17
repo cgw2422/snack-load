@@ -59,3 +59,24 @@ export const voidSaleSchema = z.object({
   saleId: z.string().min(1),
   reason: z.string().trim().min(3, 'Say why this is being voided').max(500),
 })
+
+/**
+ * The receipt book's filters (spec §25).
+ *
+ * Amounts are decimal strings, never numbers, all the way to the query — a
+ * float here would be the one place money leaks into binary (docs/02 §M1).
+ * Dates are calendar days in the organization's zone, resolved server-side.
+ */
+export const receiptQuerySchema = z.object({
+  search: z.string().trim().max(120).optional(),
+  customerId: z.string().trim().min(1).optional(),
+  from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Use a date like 2026-09-17').optional(),
+  to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Use a date like 2026-09-17').optional(),
+  /** open = still owed, overdue = owed past its due date. */
+  status: z.enum(['all', 'paid', 'open', 'overdue', 'voided']).default('all'),
+  minAmount: z.string().regex(/^\d+(\.\d{1,2})?$/, 'Use an amount like 25 or 25.00').optional(),
+  maxAmount: z.string().regex(/^\d+(\.\d{1,2})?$/, 'Use an amount like 25 or 25.00').optional(),
+  page: z.coerce.number().int().min(1).max(10_000).default(1),
+  pageSize: z.coerce.number().int().min(1).max(200).default(25),
+})
+export type ReceiptQuery = z.infer<typeof receiptQuerySchema>

@@ -198,3 +198,36 @@ station succeeds whether or not Intuit is reachable.
 | `INTERNAL` | 500 | logged with requestId; message is generic |
 
 A cross-tenant read returns **404, not 403** — confirming existence is itself a leak.
+
+## 8. Messaging (email and SMS)
+
+Two interfaces, `EmailProvider` and `SmsProvider` in `src/server/messaging`, and
+nothing else in the codebase names a vendor. Configuration picks the adapter:
+
+| Variable | Effect |
+|---|---|
+| `EMAIL_PROVIDER_URL` / `SMS_PROVIDER_URL` | JSON-over-HTTP adapter, bearer token |
+| unset | console adapter — logs the message, reports success |
+
+The console adapter is refused in production: "every receipt said Sent" is a
+worse failure than a button that errors on day one.
+
+**`send` never throws for a delivery failure.** A bounced address, a suppressed
+recipient, a provider timeout — all come back as `{ ok: false, error }`, are
+written to `receipt_delivery` as a FAILED row with the provider's own wording,
+and are shown to the person who pressed Send. The sale is not touched, and
+`receipt.emailedAt` is not set. The money moved at the counter; whether the
+email landed is a separate fact, and unwinding a posted transaction because an
+SMTP server was down would be the far worse bug (`02 §A5`).
+
+Texts carry a **link, not an attachment**. MMS is expensive, unreliable across
+carriers, and unreadable on a good fraction of the phones a store clerk owns.
+
+### Printing
+
+Producing document bytes and getting them onto paper are separate problems.
+`renderReceiptPdf` returns bytes in two layouts — US Letter and a continuous
+80 mm roll sized to its content — and knows nothing about printers. The browser
+can only offer a print dialog; a native app will drive a Bluetooth thermal
+printer directly. Both consume the same bytes, so neither is a rewrite of the
+other (`05 §6`).

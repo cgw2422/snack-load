@@ -110,8 +110,36 @@ client. A Prisma **client extension** intercepts every model operation:
 - throws on `delete`/`deleteMany` for financial models (see `01 §9`).
 
 The unscoped client is exported only as `unsafeDb` from a single file, used by
-auth (pre-session), the seeder, and the sync worker, each of which sets its own
-scope explicitly.
+four callers, each of which sets its own scope explicitly:
+
+1. **auth**, which runs before an organization is known,
+2. **the seeder**, which creates organizations,
+3. **the sync worker**, which sets its scope per job,
+4. **share-link resolution** (`resolveShareToken`, `getPublicReceiptDocument`),
+   where there is no session at all. The capability token *is* the scope: it
+   resolves to exactly one `(organizationId, saleId)` pair, and the reader is
+   handed both. Nothing a visitor controls reaches the query — the sale id comes
+   from the resolved row, never from the URL — so there is no parameter to
+   tamper with and no way to widen the read.
+
+### Capability links (`/r/<token>`)
+
+A store gets its receipt without an account, so the link is the credential and
+is built like one:
+
+- **32 bytes from the CSPRNG**, base64url. Not a cuid, not the sale id, nothing
+  a visitor could increment to reach the next store's invoice.
+- **Stored as a sha256 digest.** A dump of `receipt_share_link` hands an attacker
+  nothing that opens a document.
+- **One row grants one sale.** Expired, revoked and never-existed are all the
+  same 404, so a visitor learns nothing about which receipts exist.
+- **`noindex`**, because somebody will paste a link into a public thread.
+
+**Expiry is deliberately long** (`RECEIPT_LINK_DAYS`, 400 by default; 0 disables
+it). A store asking in December for last March's invoice is ordinary business,
+and "that link expired, call the office" is the least useful thing a distributor
+can say. The token is unguessable, so the real risk is a *forwarded* link —
+which revocation handles precisely and a clock handles badly.
 
 **Layer 3 — identifiers are never trusted.** `organizationId` is read from the
 session. A body field named `organizationId` is stripped by the Zod schema.
