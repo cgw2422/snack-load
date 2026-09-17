@@ -158,6 +158,13 @@
   .pb-nav {
     padding-bottom: calc(5.5rem + env(safe-area-inset-bottom, 0px));
   }
+  /* A bar pinned ABOVE the bottom nav. The nav is 60px and the raised Sell
+     button overhangs it by another 17px, so anything competing for the bottom
+     of the screen — a checkout total, say — has to start above both or the nav
+     swallows the tap. */
+  .above-nav {
+    bottom: calc(5rem + env(safe-area-inset-bottom, 0px));
+  }
   .no-scrollbar::-webkit-scrollbar {
     display: none;
   }

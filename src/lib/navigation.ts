@@ -43,7 +43,7 @@ export const MORE_NAV: NavItem[] = [
     href: '/receipts',
     label: 'Receipts',
     icon: 'receipt',
-    anyOf: ['receipt:read'],
+    anyOf: ['sale:read', 'sale:read_own'],
     description: 'Every sale document',
   },
   {
@@ -106,7 +106,7 @@ export const DESKTOP_NAV: { heading: string; items: NavItem[] }[] = [
     heading: 'Accounts',
     items: [
       { href: '/customers', label: 'Customers', icon: 'store', anyOf: ['customer:read'] },
-      { href: '/receipts', label: 'Receipts', icon: 'receipt', anyOf: ['receipt:read'] },
+      { href: '/receipts', label: 'Receipts', icon: 'receipt', anyOf: ['sale:read', 'sale:read_own'] },
       { href: '/receivables', label: 'Receivables', icon: 'wallet', anyOf: ['payment:read'] },
       {
         href: '/suppliers',

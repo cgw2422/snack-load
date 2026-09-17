@@ -52,9 +52,30 @@ function pick<T>(items: T[], count: number): T[] {
   return out
 }
 
+/**
+ * A fixed hour of the day, n days back.
+ *
+ * Today is clamped to at least an hour ago. Without that, seeding before the
+ * anchor hour puts today's route in the future, the loop skips it, and whether
+ * the demo has a truck loaded and a route in progress depends on the minute you
+ * happened to run `pnpm db:seed`. The calendar day is preserved either way.
+ */
 function daysAgo(n: number): Date {
-  const d = new Date()
+  const now = new Date()
+  const d = new Date(now)
   d.setUTCHours(15, 30, 0, 0)
+
+  if (n === 0) {
+    const justAfterMidnight = new Date(now)
+    justAfterMidnight.setUTCHours(0, 1, 0, 0)
+    d.setTime(
+      Math.max(
+        justAfterMidnight.getTime(),
+        Math.min(d.getTime(), now.getTime() - 60 * 60 * 1000),
+      ),
+    )
+  }
+
   d.setUTCDate(d.getUTCDate() - n)
   return d
 }
