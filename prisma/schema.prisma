@@ -96,7 +96,9 @@ model Organization {
   returns                Return[]
   returnItems            ReturnItem[]
   creditMemos            CreditMemo[]
+  creditMemoItems        CreditMemoItem[]
   creditApplications     CreditMemoApplication[]
+  refunds                Refund[]
   importJobs             ImportJob[]
   importRows             ImportRow[]
   integrations           IntegrationConnection[]
@@ -151,6 +153,12 @@ model User {
   paymentsReceived      Payment[]                @relation("PaymentReceiver")
   paymentsReversed      Payment[]                @relation("PaymentReverser")
   returnsCreated        Return[]                 @relation("ReturnCreator")
+  returnsVoided         Return[]                 @relation("ReturnVoider")
+  creditsIssued         CreditMemo[]             @relation("CreditIssuer")
+  creditsVoided         CreditMemo[]             @relation("CreditVoider")
+  creditsApplied        CreditMemoApplication[]  @relation("CreditApplier")
+  refundsIssued         Refund[]                 @relation("RefundIssuer")
+  refundsVoided         Refund[]                 @relation("RefundVoider")
   closeoutsSubmitted    RouteCloseout[]          @relation("CloseoutSubmitter")
   closeoutsReviewed     RouteCloseout[]          @relation("CloseoutReviewer")
   reassignmentsFrom     RouteAssignmentHistory[] @relation("ReassignFrom")
@@ -370,6 +378,7 @@ model Product {
   truckLoadItems   TruckLoadItem[]
   saleItems        SaleItem[]
   returnItems      ReturnItem[]
+  creditItems      CreditMemoItem[]
   closeoutItems    RouteCloseoutItem[]
   priceGroupPrices PriceGroupPrice[]
   customerPrices   CustomerPrice[]
@@ -413,6 +422,7 @@ model ProductUom {
   product          Product           @relation(fields: [productId], references: [id], onDelete: Cascade)
   saleItems        SaleItem[]
   returnItems      ReturnItem[]
+  creditItems      CreditMemoItem[]
   receivingItems   ReceivingItem[]
   truckLoadItems   TruckLoadItem[]
   priceGroupPrices PriceGroupPrice[]
@@ -552,6 +562,7 @@ model Customer {
   payments     Payment[]
   returns      Return[]
   creditMemos  CreditMemo[]
+  refunds      Refund[]
 
   @@unique([organizationId, accountNumber])
   @@index([organizationId, active, name])
@@ -587,6 +598,13 @@ model CustomerContact {
 enum InventoryLocationKind {
   WAREHOUSE
   VEHICLE
+  /// Goods taken back from a store that must not be sold again. Held rather
+  /// than destroyed on the spot, because "we took it back" and "we wrote it
+  /// off" are two events and an auditor is entitled to see both (docs/02 §R3).
+  DAMAGED_HOLD
+  EXPIRED_HOLD
+  /// Staged for return to the supplier who sold it to us.
+  SUPPLIER_RETURN_HOLD
 }
 
 model InventoryLocation {
@@ -595,6 +613,10 @@ model InventoryLocation {
   kind           InventoryLocationKind
   name           String
   code           String?
+  /// Whether stock here can be sold. False for the three hold locations, which
+  /// is what keeps a damaged return out of the truck's sellable on-hand while
+  /// still recording that the goods physically came back.
+  sellable       Boolean               @default(true)
   active         Boolean               @default(true)
   createdAt      DateTime              @default(now()) @map("created_at")
 
@@ -604,6 +626,7 @@ model InventoryLocation {
   balances     InventoryBalance[]
   ledgerLines  InventoryTransactionLine[]
   receivings   Receiving[]
+  returnItems  ReturnItem[]
 
   @@index([organizationId, kind, active])
   @@map("inventory_location")
@@ -688,7 +711,13 @@ enum InventoryTransactionType {
   TRUCK_UNLOAD
   TRANSFER
   SALE
+  /// Deprecated: superseded by the four CUSTOMER_RETURN_* types below, which
+  /// say what happened to the goods instead of leaving it to be inferred.
   CUSTOMER_RETURN
+  CUSTOMER_RETURN_SELLABLE
+  CUSTOMER_RETURN_DAMAGED
+  CUSTOMER_RETURN_EXPIRED
+  CUSTOMER_RETURN_SUPPLIER
   DAMAGE
   EXPIRED
   MISSING
@@ -722,7 +751,9 @@ model InventoryTransaction {
   receiving    Receiving?
   truckLoad    TruckLoad?
   sale         Sale?
-  return       Return?
+  /// A return posts one transaction per disposition, so the link lives on the
+  /// items rather than on the return document.
+  returnItems  ReturnItem[]
 
   @@unique([organizationId, idempotencyKey])
   @@index([organizationId, type, occurredAt])
@@ -1187,6 +1218,7 @@ model Sale {
   signature          Signature?
   paymentAllocations PaymentAllocation[]
   creditApplications CreditMemoApplication[]
+  creditMemos        CreditMemo[]
   returns            Return[]
 
   @@unique([organizationId, saleNumber])
@@ -1228,6 +1260,8 @@ model SaleItem {
   sale         Sale         @relation(fields: [saleId], references: [id], onDelete: Cascade)
   product      Product      @relation(fields: [productId], references: [id])
   productUom   ProductUom   @relation(fields: [productUomId], references: [id])
+  returnItems  ReturnItem[]
+  creditItems  CreditMemoItem[]
 
   @@index([saleId])
   @@index([organizationId, productId])
@@ -1278,7 +1312,10 @@ enum DeliveryStatus {
 model ReceiptDelivery {
   id             String         @id @default(cuid())
   organizationId String         @map("organization_id")
-  saleId         String         @map("sale_id")
+  /// Exactly one of these is set. A delivery is always of one document, and
+  /// which kind it is decides how it renders (spec §10).
+  saleId         String?        @map("sale_id")
+  creditMemoId   String?        @map("credit_memo_id")
   channel        DeliveryChannel
   /// Email address or phone number. Null for PRINT and DOWNLOAD.
   destination    String?
@@ -1293,11 +1330,13 @@ model ReceiptDelivery {
   completedAt    DateTime?      @map("completed_at")
 
   organization Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  sale         Sale              @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  sale         Sale?             @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  creditMemo   CreditMemo?       @relation(fields: [creditMemoId], references: [id], onDelete: Cascade)
   sentBy       User?             @relation("DeliverySender", fields: [sentByUserId], references: [id])
   shareLink    ReceiptShareLink? @relation(fields: [shareLinkId], references: [id])
 
   @@index([organizationId, saleId, attemptedAt])
+  @@index([organizationId, creditMemoId, attemptedAt])
   @@index([organizationId, status, attemptedAt])
   @@map("receipt_delivery")
 }
@@ -1311,7 +1350,9 @@ model ReceiptDelivery {
 model ReceiptShareLink {
   id             String    @id @default(cuid())
   organizationId String    @map("organization_id")
-  saleId         String    @map("sale_id")
+  /// Exactly one of these is set; the token grants that one document.
+  saleId         String?   @map("sale_id")
+  creditMemoId   String?   @map("credit_memo_id")
   tokenHash      String    @unique @map("token_hash")
   createdByUserId String?  @map("created_by_user_id")
   createdAt      DateTime  @default(now()) @map("created_at")
@@ -1323,11 +1364,13 @@ model ReceiptShareLink {
   viewCount      Int       @default(0) @map("view_count")
 
   organization Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  sale         Sale              @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  sale         Sale?             @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  creditMemo   CreditMemo?       @relation(fields: [creditMemoId], references: [id], onDelete: Cascade)
   createdBy    User?             @relation("ShareLinkCreator", fields: [createdByUserId], references: [id])
   deliveries   ReceiptDelivery[]
 
   @@index([organizationId, saleId])
+  @@index([organizationId, creditMemoId])
   @@map("receipt_share_link")
 }
 
@@ -1419,26 +1462,43 @@ model PaymentAllocation {
   @@map("payment_allocation")
 }
 
+/// Structured, not free text: "why are we taking product back" is a question
+/// somebody will want to group by (spec §2).
 enum ReturnReason {
-  EXPIRED
   DAMAGED
+  EXPIRED
   WRONG_ITEM
   UNSOLD
   SWAP
+  PRICING_ERROR
+  DELIVERY_ERROR
   OTHER
 }
 
+/// What happens to the goods, per line. A return of three cases can put two
+/// back on the truck and write one off, and one disposition per document
+/// cannot express that (spec §3).
 enum ReturnDisposition {
-  TRUCK
-  WAREHOUSE
-  DESTROY
+  RESTOCK_TRUCK
+  RESTOCK_WAREHOUSE
+  DAMAGED
+  EXPIRED
+  SUPPLIER_RETURN
+  /// A credit with nothing coming back — a pricing mistake, a goodwill credit.
+  /// No ledger line is posted at all.
+  NONE
 }
 
+/// What the money does. Deliberately separate from the disposition: goods and
+/// money are independent consequences of the same event (spec §3).
 enum ReturnFinancialAction {
-  REFUND
+  /// Credit issued and applied to the customer's open invoices, oldest first.
+  APPLY_TO_BALANCE
+  /// Credit issued and left on the account for later.
   ACCOUNT_CREDIT
-  REPLACEMENT
-  CREDIT_MEMO
+  /// Credit issued and immediately refunded.
+  REFUND
+  /// Goods back, no credit. Rare, and it is a choice somebody has to make.
   NONE
 }
 
@@ -1447,17 +1507,25 @@ enum ReturnStatus {
   VOIDED
 }
 
+/// A physical return (spec §1).
+///
+/// The originating sale is never edited. A return is a new document that
+/// references it, carries its own number, and posts its own ledger lines. What
+/// was sold, what came back, why, where it went, what credit was issued and
+/// whether cash left the drawer are all separately answerable afterwards.
 model Return {
   id              String                @id @default(cuid())
   organizationId  String                @map("organization_id")
   returnNumber    String                @map("return_number")
   customerId      String                @map("customer_id")
+  /// Null for a return with no identifiable original sale. Where it is set,
+  /// the returnable-quantity guard runs against that sale's lines.
   saleId          String?               @map("sale_id")
   routeStopId     String?               @map("route_stop_id")
   createdByUserId String?               @map("created_by_user_id")
   occurredAt      DateTime              @default(now()) @map("occurred_at")
+  /// Document-level reason. Each line may carry its own.
   reason          ReturnReason
-  disposition     ReturnDisposition
   financialAction ReturnFinancialAction @map("financial_action")
 
   subtotal Decimal      @default(0) @db.Decimal(14, 4)
@@ -1465,48 +1533,70 @@ model Return {
   total    Decimal      @default(0) @db.Decimal(14, 4)
   status   ReturnStatus @default(COMPLETED)
 
-  inventoryTransactionId String?  @unique @map("inventory_transaction_id")
-  creditMemoId           String?  @unique @map("credit_memo_id")
-  idempotencyKey         String   @map("idempotency_key")
-  notes                  String?
-  createdAt              DateTime @default(now()) @map("created_at")
+  creditMemoId   String?  @unique @map("credit_memo_id")
+  idempotencyKey String   @map("idempotency_key")
+  notes          String?
+  voidedAt       DateTime? @map("voided_at")
+  voidedByUserId String?   @map("voided_by_user_id")
+  voidReason     String?   @map("void_reason")
+  createdAt      DateTime @default(now()) @map("created_at")
 
-  organization Organization          @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  customer     Customer              @relation(fields: [customerId], references: [id])
-  sale         Sale?                 @relation(fields: [saleId], references: [id])
-  routeStop    RouteStop?            @relation(fields: [routeStopId], references: [id])
-  createdBy    User?                 @relation("ReturnCreator", fields: [createdByUserId], references: [id])
-  transaction  InventoryTransaction? @relation(fields: [inventoryTransactionId], references: [id])
-  creditMemo   CreditMemo?           @relation(fields: [creditMemoId], references: [id])
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  customer     Customer     @relation(fields: [customerId], references: [id])
+  sale         Sale?        @relation(fields: [saleId], references: [id])
+  routeStop    RouteStop?   @relation(fields: [routeStopId], references: [id])
+  createdBy    User?        @relation("ReturnCreator", fields: [createdByUserId], references: [id])
+  voidedBy     User?        @relation("ReturnVoider", fields: [voidedByUserId], references: [id])
+  creditMemo   CreditMemo?  @relation(fields: [creditMemoId], references: [id])
   items        ReturnItem[]
   signature    Signature?
 
   @@unique([organizationId, returnNumber])
   @@unique([organizationId, idempotencyKey])
   @@index([organizationId, customerId, occurredAt])
+  @@index([organizationId, saleId])
   @@map("sales_return")
 }
 
 model ReturnItem {
-  id             String       @id @default(cuid())
-  organizationId String       @map("organization_id")
-  returnId       String       @map("return_id")
-  productId      String       @map("product_id")
-  productUomId   String       @map("product_uom_id")
-  quantity       Int
-  baseQuantity   Int          @map("base_quantity")
-  unitPrice      Decimal      @map("unit_price") @db.Decimal(12, 4)
-  lineTotal      Decimal      @map("line_total") @db.Decimal(14, 4)
-  reason         ReturnReason
-  /// False for destroy/write-off: no positive ledger line is posted.
-  restock        Boolean      @default(true)
+  id             String @id @default(cuid())
+  organizationId String @map("organization_id")
+  returnId       String @map("return_id")
+  /// The exact line being returned against, which is what makes the
+  /// returnable-quantity guard precise rather than per-product (spec §1).
+  saleItemId     String? @map("sale_item_id")
+  productId      String @map("product_id")
+  productUomId   String @map("product_uom_id")
 
-  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  return       Return       @relation(fields: [returnId], references: [id], onDelete: Cascade)
-  product      Product      @relation(fields: [productId], references: [id])
-  productUom   ProductUom   @relation(fields: [productUomId], references: [id])
+  productNameSnapshot String @map("product_name_snapshot")
+  skuSnapshot         String @map("sku_snapshot")
+  uomLabelSnapshot    String @map("uom_label_snapshot")
+
+  quantity     Int
+  baseQuantity Int @map("base_quantity")
+
+  /// The cost frozen on the original sale line. The COGS reversal uses this and
+  /// never today's cost (spec §21, docs/02 §L5).
+  unitCostAtSale Decimal @default(0) @map("unit_cost_at_sale") @db.Decimal(16, 6)
+
+  disposition  ReturnDisposition
+  reason       ReturnReason
+  /// Where the goods landed. Null when the disposition is NONE.
+  locationId   String? @map("location_id")
+  /// The ledger transaction that moved them. Shared by every line in this
+  /// return with the same disposition; null when nothing moved.
+  inventoryTransactionId String? @map("inventory_transaction_id")
+
+  organization Organization          @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  return       Return                @relation(fields: [returnId], references: [id], onDelete: Cascade)
+  saleItem     SaleItem?             @relation(fields: [saleItemId], references: [id])
+  product      Product               @relation(fields: [productId], references: [id])
+  productUom   ProductUom            @relation(fields: [productUomId], references: [id])
+  location     InventoryLocation?    @relation(fields: [locationId], references: [id])
+  transaction  InventoryTransaction? @relation(fields: [inventoryTransactionId], references: [id])
 
   @@index([returnId])
+  @@index([organizationId, saleItemId])
   @@map("sales_return_item")
 }
 
@@ -1516,44 +1606,173 @@ enum CreditMemoStatus {
   VOIDED
 }
 
+/// The financial document (spec §4).
+///
+/// Its own immutable number, its own line snapshots, and a remaining balance
+/// that is drawn down by allocations to invoices and by refunds. A credit memo
+/// can exist without a return — a pricing correction credits money with nothing
+/// coming back.
 model CreditMemo {
-  id              String           @id @default(cuid())
-  organizationId  String           @map("organization_id")
-  customerId      String           @map("customer_id")
-  number          String
+  id             String           @id @default(cuid())
+  organizationId String           @map("organization_id")
+  customerId     String           @map("customer_id")
+  number         String
+  /// The sale this credit relates to, where there is one.
+  saleId         String?          @map("sale_id")
+  issuedByUserId String?          @map("issued_by_user_id")
+  reason         ReturnReason     @default(OTHER)
+
+  subtotal       Decimal @default(0) @db.Decimal(14, 4)
+  discountTotal  Decimal @default(0) @map("discount_total") @db.Decimal(14, 4)
+  taxTotal       Decimal @default(0) @map("tax_total") @db.Decimal(14, 4)
+  /// Total credit. `amount` is the document total; `remainingAmount` is what is
+  /// still unspent after allocations and refunds.
   amount          Decimal          @db.Decimal(14, 4)
   remainingAmount Decimal          @map("remaining_amount") @db.Decimal(14, 4)
+  refundedAmount  Decimal          @default(0) @map("refunded_amount") @db.Decimal(14, 4)
   status          CreditMemoStatus @default(OPEN)
   issuedAt        DateTime         @default(now()) @map("issued_at")
   notes           String?
-  createdAt       DateTime         @default(now()) @map("created_at")
-  updatedAt       DateTime         @updatedAt @map("updated_at")
+
+  /// The store and the company as they were when this credit was issued, the
+  /// same snapshot a receipt carries (docs/02 §L5).
+  billToJson Json? @map("bill_to_json")
+  issuerJson Json? @map("issuer_json")
+
+  voidedAt       DateTime? @map("voided_at")
+  voidedByUserId String?   @map("voided_by_user_id")
+  voidReason     String?   @map("void_reason")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
 
   organization Organization            @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   customer     Customer                @relation(fields: [customerId], references: [id])
+  sale         Sale?                   @relation(fields: [saleId], references: [id])
+  issuedBy     User?                   @relation("CreditIssuer", fields: [issuedByUserId], references: [id])
+  voidedBy     User?                   @relation("CreditVoider", fields: [voidedByUserId], references: [id])
   return       Return?
+  items        CreditMemoItem[]
   applications CreditMemoApplication[]
+  refunds      Refund[]
+  deliveries   ReceiptDelivery[]
+  shareLinks   ReceiptShareLink[]
 
   @@unique([organizationId, number])
   @@index([organizationId, customerId, status])
+  @@index([organizationId, issuedAt])
   @@map("credit_memo")
 }
 
+/// One credited line, snapshotted. Never reconstructed from today's prices.
+model CreditMemoItem {
+  id             String  @id @default(cuid())
+  organizationId String  @map("organization_id")
+  creditMemoId   String  @map("credit_memo_id")
+  saleItemId     String? @map("sale_item_id")
+  productId      String? @map("product_id")
+  productUomId   String? @map("product_uom_id")
+
+  descriptionSnapshot String @map("description_snapshot")
+  skuSnapshot         String @default("") @map("sku_snapshot")
+  uomLabelSnapshot    String @default("") @map("uom_label_snapshot")
+
+  quantity     Int @default(0)
+  baseQuantity Int @default(0) @map("base_quantity")
+
+  /// The price actually charged on the original line, not today's price.
+  unitPrice      Decimal @default(0) @map("unit_price") @db.Decimal(12, 4)
+  lineSubtotal   Decimal @default(0) @map("line_subtotal") @db.Decimal(14, 4)
+  discountAmount Decimal @default(0) @map("discount_amount") @db.Decimal(14, 4)
+  /// Tax reversed on this line, derived from the original sale's tax, not from
+  /// recomputing today's rules (spec §5).
+  taxAmount      Decimal @default(0) @map("tax_amount") @db.Decimal(14, 4)
+  lineTotal      Decimal @default(0) @map("line_total") @db.Decimal(14, 4)
+  /// True when the original line was taxed. Kept so a reversal can be explained.
+  taxable        Boolean @default(false)
+  /// Historical COGS to reverse. Zero when nothing physically came back.
+  unitCostAtSale Decimal @default(0) @map("unit_cost_at_sale") @db.Decimal(16, 6)
+
+  reason    ReturnReason @default(OTHER)
+  sortOrder Int          @default(0) @map("sort_order")
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  creditMemo   CreditMemo   @relation(fields: [creditMemoId], references: [id], onDelete: Cascade)
+  saleItem     SaleItem?    @relation(fields: [saleItemId], references: [id])
+  product      Product?     @relation(fields: [productId], references: [id])
+  productUom   ProductUom?  @relation(fields: [productUomId], references: [id])
+
+  @@index([creditMemoId])
+  @@index([organizationId, saleItemId])
+  @@map("credit_memo_item")
+}
+
+enum CreditApplicationStatus {
+  APPLIED
+  REVERSED
+}
+
 model CreditMemoApplication {
-  id             String   @id @default(cuid())
-  organizationId String   @map("organization_id")
-  creditMemoId   String   @map("credit_memo_id")
-  saleId         String   @map("sale_id")
-  amount         Decimal  @db.Decimal(14, 4)
-  appliedAt      DateTime @default(now()) @map("applied_at")
+  id             String                  @id @default(cuid())
+  organizationId String                  @map("organization_id")
+  creditMemoId   String                  @map("credit_memo_id")
+  saleId         String                  @map("sale_id")
+  amount         Decimal                 @db.Decimal(14, 4)
+  status         CreditApplicationStatus @default(APPLIED)
+  appliedAt      DateTime                @default(now()) @map("applied_at")
+  appliedByUserId String?                @map("applied_by_user_id")
+  reversedAt     DateTime?               @map("reversed_at")
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   creditMemo   CreditMemo   @relation(fields: [creditMemoId], references: [id], onDelete: Cascade)
   sale         Sale         @relation(fields: [saleId], references: [id])
+  appliedBy    User?        @relation("CreditApplier", fields: [appliedByUserId], references: [id])
 
   @@index([creditMemoId])
   @@index([organizationId, saleId])
   @@map("credit_memo_application")
+}
+
+enum RefundStatus {
+  POSTED
+  VOIDED
+}
+
+/// Money leaving the drawer (spec §8).
+///
+/// Not a reversed payment: a payment that never happened and a refund of one
+/// that did are different events, and collapsing them loses the cash trail. A
+/// refund draws down a credit memo's remaining balance.
+model Refund {
+  id             String        @id @default(cuid())
+  organizationId String        @map("organization_id")
+  refundNumber   String        @map("refund_number")
+  customerId     String        @map("customer_id")
+  creditMemoId   String        @map("credit_memo_id")
+  amount         Decimal       @db.Decimal(14, 4)
+  method         PaymentMethod
+  issuedAt       DateTime      @default(now()) @map("issued_at")
+  issuedByUserId String?       @map("issued_by_user_id")
+  /// Cheque number, card authorisation, ACH trace — whatever proves it left.
+  referenceNumber String?      @map("reference_number")
+  notes          String?
+  status         RefundStatus  @default(POSTED)
+  voidedAt       DateTime?     @map("voided_at")
+  voidedByUserId String?       @map("voided_by_user_id")
+  voidReason     String?       @map("void_reason")
+  idempotencyKey String        @map("idempotency_key")
+  createdAt      DateTime      @default(now()) @map("created_at")
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  customer     Customer     @relation(fields: [customerId], references: [id])
+  creditMemo   CreditMemo   @relation(fields: [creditMemoId], references: [id])
+  issuedBy     User?        @relation("RefundIssuer", fields: [issuedByUserId], references: [id])
+  voidedBy     User?        @relation("RefundVoider", fields: [voidedByUserId], references: [id])
+
+  @@unique([organizationId, refundNumber])
+  @@unique([organizationId, idempotencyKey])
+  @@index([organizationId, customerId, issuedAt])
+  @@index([organizationId, creditMemoId])
+  @@map("refund")
 }
 
 /// Atomic document numbering. Incremented with SELECT … FOR UPDATE inside the

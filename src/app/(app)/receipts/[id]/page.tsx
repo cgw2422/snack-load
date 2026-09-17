@@ -25,7 +25,7 @@ export default async function ReceiptPage(props: PageProps<'/receipts/[id]'>) {
   })
 
   const canSend = can(ctx, 'receipt:send')
-  const deliveries = await listDeliveries(ctx, doc.saleId)
+  const deliveries = await listDeliveries(ctx, { kind: 'sale', id: doc.saleId })
 
   const total = new Intl.NumberFormat('en-US', {
     style: 'currency',
@@ -43,9 +43,20 @@ export default async function ReceiptPage(props: PageProps<'/receipts/[id]'>) {
           <ChevronLeft className="size-4" aria-hidden="true" />
           Receipts
         </Link>
-        <ButtonLink href={`/customers/${doc.customerId}`} size="sm" variant="secondary">
-          {doc.billTo.name}
-        </ButtonLink>
+        <span className="flex items-center gap-2">
+          {can(ctx, 'return:create') && doc.status !== 'VOIDED' ? (
+            <ButtonLink href={`/receipts/${doc.saleId}/return`} size="sm" variant="secondary">
+              Return items
+            </ButtonLink>
+          ) : null}
+          <ButtonLink
+            href={`/customers/${doc.customerId}/account`}
+            size="sm"
+            variant="secondary"
+          >
+            {doc.billTo.name}
+          </ButtonLink>
+        </span>
       </div>
 
       <ReceiptPaper doc={doc} />

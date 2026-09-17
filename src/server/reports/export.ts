@@ -1,6 +1,7 @@
 import ExcelJS from 'exceljs'
-import { PDFDocument, StandardFonts, rgb, type PDFFont } from 'pdf-lib'
+import { PDFDocument, StandardFonts, rgb, type PDFFont, type PDFPage } from 'pdf-lib'
 import type { ColumnFormat, ReportColumn, ReportResult, ReportRow } from './types'
+import { toWinAnsi } from '@/server/documents/winAnsi'
 
 /**
  * Report exports (spec §34).
@@ -191,17 +192,17 @@ export async function toPdf(report: ReportResult): Promise<Uint8Array> {
 
   const drawHeader = (first: boolean) => {
     if (first) {
-      page.drawText(report.title, { x: margin, y: y - 14, size: 15, font: bold, color: INK })
+      drawText(page, report.title, { x: margin, y: y - 14, size: 15, font: bold, color: INK })
       y -= 20
-      page.drawText(report.appliedTo, { x: margin, y: y - 9, size: 9, font, color: MUTED })
+      drawText(page, report.appliedTo, { x: margin, y: y - 9, size: 9, font, color: MUTED })
       y -= 13
-      page.drawText(`Generated ${formatDateTime(report.generatedAt, report.timeZone)}`, {
+      drawText(page, `Generated ${formatDateTime(report.generatedAt, report.timeZone)}`, {
         x: margin, y: y - 8, size: 8, font, color: MUTED,
       })
       y -= 16
 
       for (const line of wrap(report.definition, font, 8, width)) {
-        page.drawText(line, { x: margin, y: y - 8, size: 8, font, color: MUTED })
+        drawText(page, line, { x: margin, y: y - 8, size: 8, font, color: MUTED })
         y -= 10
       }
       y -= 8
@@ -212,9 +213,9 @@ export async function toPdf(report: ReportResult): Promise<Uint8Array> {
     report.columns.forEach((column, index) => {
       const label = truncate(column.label, bold, 8, widths[index] - 4)
       if (column.format === 'text') {
-        page.drawText(label, { x: offsets[index], y, size: 8, font: bold, color: MUTED })
+        drawText(page, label, { x: offsets[index], y, size: 8, font: bold, color: MUTED })
       } else {
-        page.drawText(label, {
+        drawText(page, label, {
           x: offsets[index] + widths[index] - 4 - bold.widthOfTextAtSize(label, 8),
           y, size: 8, font: bold, color: MUTED,
         })
@@ -240,9 +241,9 @@ export async function toPdf(report: ReportResult): Promise<Uint8Array> {
       const clipped = truncate(text, face, 8.5, widths[index] - 4)
 
       if (column.format === 'text') {
-        page.drawText(clipped, { x: offsets[index], y, size: 8.5, font: face, color: INK })
+        drawText(page, clipped, { x: offsets[index], y, size: 8.5, font: face, color: INK })
       } else {
-        page.drawText(clipped, {
+        drawText(page, clipped, {
           x: offsets[index] + widths[index] - 4 - face.widthOfTextAtSize(clipped, 8.5),
           y, size: 8.5, font: face, color: INK,
         })
@@ -267,7 +268,7 @@ export async function toPdf(report: ReportResult): Promise<Uint8Array> {
           page = pdf.addPage(LANDSCAPE)
           y = LANDSCAPE[1] - margin
         }
-        page.drawText(line, { x: margin, y, size: 8, font, color: MUTED })
+        drawText(page, line, { x: margin, y, size: 8, font, color: MUTED })
         y -= 10
       }
     }
@@ -312,6 +313,7 @@ function formatDateTime(iso: string, timeZone: string): string {
 }
 
 function truncate(value: string, font: PDFFont, size: number, max: number): string {
+  value = toWinAnsi(value)
   if (font.widthOfTextAtSize(value, size) <= max) return value
   let out = value
   while (out.length > 1 && font.widthOfTextAtSize(`${out}…`, size) > max) out = out.slice(0, -1)
@@ -319,6 +321,7 @@ function truncate(value: string, font: PDFFont, size: number, max: number): stri
 }
 
 function wrap(value: string, font: PDFFont, size: number, max: number): string[] {
+  value = toWinAnsi(value)
   const lines: string[] = []
   let current = ''
   for (const word of value.split(/\s+/).filter(Boolean)) {
@@ -332,4 +335,17 @@ function wrap(value: string, font: PDFFont, size: number, max: number): string[]
   }
   if (current) lines.push(current)
   return lines
+}
+
+/**
+ * Every string drawn on a page goes through here. pdf-lib's standard fonts
+ * throw on a character they cannot encode, so sanitising at the single draw
+ * boundary is what keeps one stray em dash from failing a whole download.
+ */
+function drawText(
+  page: PDFPage,
+  value: string,
+  options: Parameters<PDFPage['drawText']>[1],
+): void {
+  page.drawText(toWinAnsi(value), options)
 }

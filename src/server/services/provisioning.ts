@@ -11,6 +11,7 @@ export const DOCUMENT_SEQUENCES: { docType: string; prefix: string; padTo: numbe
   { docType: 'RECEIPT', prefix: 'R-', padTo: 5, start: 10001 },
   { docType: 'RETURN', prefix: 'RT-', padTo: 5, start: 1 },
   { docType: 'CREDIT_MEMO', prefix: 'CM-', padTo: 5, start: 1 },
+  { docType: 'REFUND', prefix: 'RF-', padTo: 5, start: 1 },
   { docType: 'RECEIVING', prefix: 'RCV-', padTo: 5, start: 1 },
   { docType: 'TRUCK_LOAD', prefix: 'TL-', padTo: 5, start: 1 },
   { docType: 'PAYMENT', prefix: 'P-', padTo: 5, start: 1 },

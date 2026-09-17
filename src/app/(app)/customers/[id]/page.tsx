@@ -229,12 +229,20 @@ export default async function CustomerPage(props: PageProps<'/customers/[id]'>) 
           title="Recent orders"
           action={
             can(ctx, 'sale:read') || can(ctx, 'sale:read_own') ? (
-              <Link
-                href={`/customers/${customer.id}/receipts`}
-                className="text-sm font-semibold text-navy-700 hover:text-navy-800"
-              >
-                Full history
-              </Link>
+              <span className="flex items-center gap-3">
+                <Link
+                  href={`/customers/${customer.id}/account`}
+                  className="text-sm font-semibold text-navy-700 hover:text-navy-800"
+                >
+                  Account
+                </Link>
+                <Link
+                  href={`/customers/${customer.id}/receipts`}
+                  className="text-sm font-semibold text-navy-700 hover:text-navy-800"
+                >
+                  Receipts
+                </Link>
+              </span>
             ) : null
           }
         />

@@ -15,6 +15,7 @@ import {
   createShareLink,
   resolveShareToken,
   revokeShareLinks,
+  type ResolvedShareLink,
 } from '@/server/services/shareLink.service'
 import {
   getPublicReceiptDocument,
@@ -32,6 +33,16 @@ import {
   createTestOrg,
   type TestOrg,
 } from '../helpers'
+
+function saleIdOf(link: ResolvedShareLink): string {
+  if (link.target.kind !== 'sale') throw new Error('expected a sale link')
+  return link.target.saleId
+}
+
+/** Shorthand for "the sale document with this id". */
+function doc(id: string): { kind: 'sale'; id: string } {
+  return { kind: 'sale', id }
+}
 
 async function pageHeight(bytes: Uint8Array): Promise<number> {
   const pdf = await PDFDocument.load(bytes)
@@ -258,14 +269,14 @@ describe('receipt delivery', () => {
 
   describe('email', () => {
     it('sends to the address on file, attaches the PDF, and logs it', async () => {
-      const result = await emailReceipt(org.ownerCtx, { saleId })
+      const result = await emailReceipt(org.ownerCtx, { document: doc(saleId) })
 
       expect(result.status).toBe('SENT')
       expect(result.destination).toBe('orders@joesmarathon.test')
       expect(email.sent[0].attachments?.[0].contentType).toBe('application/pdf')
       expect(email.sent[0].html).toContain(result.shareUrl)
 
-      const [log] = await listDeliveries(org.ownerCtx, saleId)
+      const [log] = await listDeliveries(org.ownerCtx, doc(saleId))
       expect(log).toMatchObject({ channel: 'EMAIL', status: 'SENT', provider: 'fake-email' })
 
       const receipt = await db(org.ownerCtx).receipt.findFirstOrThrow({ where: { saleId } })
@@ -273,7 +284,7 @@ describe('receipt delivery', () => {
     })
 
     it('sends to a typed-in address instead when one is given', async () => {
-      await emailReceipt(org.ownerCtx, { saleId, to: 'owner@elsewhere.test' })
+      await emailReceipt(org.ownerCtx, { document: doc(saleId), to: 'owner@elsewhere.test' })
       expect(email.sent[0].to).toBe('owner@elsewhere.test')
     })
 
@@ -281,7 +292,7 @@ describe('receipt delivery', () => {
       email.outcome = { ok: false, error: 'Recipient address is suppressed' }
       const before = await db(org.ownerCtx).sale.findFirstOrThrow({ where: { id: saleId } })
 
-      const result = await emailReceipt(org.ownerCtx, { saleId })
+      const result = await emailReceipt(org.ownerCtx, { document: doc(saleId) })
 
       expect(result.status).toBe('FAILED')
       expect(result.failureReason).toBe('Recipient address is suppressed')
@@ -291,7 +302,7 @@ describe('receipt delivery', () => {
       expect(after.total.toString()).toBe(before.total.toString())
       expect(after.balanceDue.toString()).toBe(before.balanceDue.toString())
 
-      const [log] = await listDeliveries(org.ownerCtx, saleId)
+      const [log] = await listDeliveries(org.ownerCtx, doc(saleId))
       expect(log).toMatchObject({ status: 'FAILED', failureReason: 'Recipient address is suppressed' })
 
       // A failed send must not claim the receipt went out.
@@ -307,7 +318,7 @@ describe('receipt delivery', () => {
         lines: [{ productId: product.id, productUomId: product.caseUomId, quantity: 1 }],
       })
 
-      await expect(emailReceipt(org.ownerCtx, { saleId: fresh.saleId })).rejects.toThrow(
+      await expect(emailReceipt(org.ownerCtx, { document: doc(fresh.saleId) })).rejects.toThrow(
         /no email address/i,
       )
       expect(email.sent).toHaveLength(0)
@@ -326,19 +337,19 @@ describe('receipt delivery', () => {
 
   describe('text', () => {
     it('sends a link rather than an attachment', async () => {
-      const result = await textReceipt(org.ownerCtx, { saleId })
+      const result = await textReceipt(org.ownerCtx, { document: doc(saleId) })
 
       expect(result.status).toBe('SENT')
       expect(sms.sent[0].body).toContain(result.shareUrl)
       expect(sms.sent[0].to).toBe('5552014488')
 
-      const [log] = await listDeliveries(org.ownerCtx, saleId)
+      const [log] = await listDeliveries(org.ownerCtx, doc(saleId))
       expect(log).toMatchObject({ channel: 'SMS', status: 'SENT' })
     })
 
     it('records a failure without touching the sale', async () => {
       sms.outcome = { ok: false, error: 'Landline cannot receive messages' }
-      const result = await textReceipt(org.ownerCtx, { saleId })
+      const result = await textReceipt(org.ownerCtx, { document: doc(saleId) })
 
       expect(result.status).toBe('FAILED')
       const receipt = await db(org.ownerCtx).receipt.findFirstOrThrow({ where: { saleId } })
@@ -348,18 +359,21 @@ describe('receipt delivery', () => {
 
   describe('share links', () => {
     it('opens exactly one receipt for whoever holds the token', async () => {
-      const { token } = await createShareLink(org.ownerCtx, saleId)
+      const { token } = await createShareLink(org.ownerCtx, { kind: 'sale', saleId })
 
       const resolved = await resolveShareToken(token)
-      expect(resolved).toMatchObject({ organizationId: org.organizationId, saleId })
+      expect(resolved).toMatchObject({
+        organizationId: org.organizationId,
+        target: { kind: 'sale', saleId },
+      })
 
-      const doc = await getPublicReceiptDocument(resolved!.organizationId, resolved!.saleId)
+      const doc = await getPublicReceiptDocument(resolved!.organizationId, saleIdOf(resolved!))
       expect(doc.receiptNumber).toBeTruthy()
       expect(doc.lines).toHaveLength(1)
     })
 
     it('stores only a digest, so the table does not hand out working links', async () => {
-      const { token } = await createShareLink(org.ownerCtx, saleId)
+      const { token } = await createShareLink(org.ownerCtx, { kind: 'sale', saleId })
       const rows = await db(org.ownerCtx).receiptShareLink.findMany({
         select: { tokenHash: true },
       })
@@ -371,11 +385,11 @@ describe('receipt delivery', () => {
     it('refuses a guess, a revoked link and an expired one alike', async () => {
       expect(await resolveShareToken('not-a-real-token-at-all-0000')).toBeNull()
 
-      const revoked = await createShareLink(org.ownerCtx, saleId)
-      await revokeShareLinks(org.ownerCtx, saleId)
+      const revoked = await createShareLink(org.ownerCtx, { kind: 'sale', saleId })
+      await revokeShareLinks(org.ownerCtx, { kind: 'sale', saleId })
       expect(await resolveShareToken(revoked.token)).toBeNull()
 
-      const expiring = await createShareLink(org.ownerCtx, saleId)
+      const expiring = await createShareLink(org.ownerCtx, { kind: 'sale', saleId })
       await db(org.ownerCtx).receiptShareLink.update({
         where: { id: expiring.id },
         data: { expiresAt: new Date(Date.now() - 1000), revokedAt: null },
@@ -384,18 +398,18 @@ describe('receipt delivery', () => {
     })
 
     it('shows the void to somebody holding a link issued before it', async () => {
-      const { token } = await createShareLink(org.ownerCtx, saleId)
+      const { token } = await createShareLink(org.ownerCtx, { kind: 'sale', saleId })
       await voidSale(org.ownerCtx, saleId, 'Returned the whole order')
 
       const resolved = await resolveShareToken(token)
-      const doc = await getPublicReceiptDocument(resolved!.organizationId, resolved!.saleId)
+      const doc = await getPublicReceiptDocument(resolved!.organizationId, saleIdOf(resolved!))
 
       expect(doc.status).toBe('VOIDED')
       expect(doc.void?.reason).toBe('Returned the whole order')
     })
 
     it('counts views without failing the read', async () => {
-      const { id, token } = await createShareLink(org.ownerCtx, saleId)
+      const { id, token } = await createShareLink(org.ownerCtx, { kind: 'sale', saleId })
       await resolveShareToken(token)
       await resolveShareToken(token)
 
@@ -405,8 +419,8 @@ describe('receipt delivery', () => {
     })
 
     it('logs a link the share sheet minted', async () => {
-      await shareLinkForReceipt(org.ownerCtx, saleId)
-      const [log] = await listDeliveries(org.ownerCtx, saleId)
+      await shareLinkForReceipt(org.ownerCtx, doc(saleId))
+      const [log] = await listDeliveries(org.ownerCtx, doc(saleId))
       expect(log).toMatchObject({ channel: 'LINK', status: 'SENT' })
     })
   })
@@ -414,12 +428,12 @@ describe('receipt delivery', () => {
   describe('who may send', () => {
     it('keeps a runner from reading another runner\'s delivery history', async () => {
       const other = await addMember(org, 'runner', { firstName: 'Sarah', lastName: 'Nguyen' })
-      await expect(listDeliveries(other.ctx, saleId)).rejects.toThrow(/not found/i)
+      await expect(listDeliveries(other.ctx, doc(saleId))).rejects.toThrow(/not found/i)
     })
 
     it('refuses a warehouse user, who has no business emailing invoices', async () => {
       const warehouse = await addMember(org, 'warehouse')
-      await expect(emailReceipt(warehouse.ctx, { saleId })).rejects.toThrow()
+      await expect(emailReceipt(warehouse.ctx, { document: doc(saleId) })).rejects.toThrow()
     })
   })
 })

@@ -14,9 +14,10 @@ import { notFound } from '@/lib/errors'
  *    anything a viewer could increment to reach the next store's receipt.
  *  - Stored as a sha256 digest. A dump of `receipt_share_link` hands an
  *    attacker nothing that opens a document.
- *  - One row grants exactly one sale. The public reader resolves the token to a
- *    sale id and asks for that sale only, so there is no parameter on the
- *    public route that a visitor could edit.
+ *  - One row grants exactly one document — a receipt or a credit memo, never a
+ *    choice of the two. The public reader resolves the token to that document's
+ *    id and asks for it only, so there is no parameter on the public route that
+ *    a visitor could edit.
  *
  * **Expiry.** A receipt is a business record; a store may need last March's
  * invoice in December, and the least helpful thing a distributor can say is
@@ -29,6 +30,17 @@ import { notFound } from '@/lib/errors'
  */
 
 const TOKEN_BYTES = 32
+
+/** Which document a token opens. A link grants one, never a choice of two. */
+export type ShareTarget =
+  | { kind: 'sale'; saleId: string }
+  | { kind: 'creditMemo'; creditMemoId: string }
+
+export type ResolvedShareLink = {
+  organizationId: string
+  target: ShareTarget
+}
+
 
 export type IssuedShareLink = {
   id: string
@@ -47,20 +59,32 @@ export function shareUrlFor(token: string): string {
 
 export async function createShareLink(
   ctx: AuthContext,
-  saleId: string,
+  target: ShareTarget,
 ): Promise<IssuedShareLink> {
-  // Scoped: a sale id from another company does not resolve.
-  const sale = await db(ctx).sale.findFirst({ where: { id: saleId }, select: { id: true } })
-  if (!sale) throw notFound('That receipt')
+  const prisma = db(ctx)
+
+  // Scoped: an id from another company does not resolve, so a link can only
+  // ever be minted for a document the session can already read.
+  if (target.kind === 'sale') {
+    const sale = await prisma.sale.findFirst({ where: { id: target.saleId }, select: { id: true } })
+    if (!sale) throw notFound('That receipt')
+  } else {
+    const memo = await prisma.creditMemo.findFirst({
+      where: { id: target.creditMemoId },
+      select: { id: true },
+    })
+    if (!memo) throw notFound('That credit memo')
+  }
 
   const token = randomBytes(TOKEN_BYTES).toString('base64url')
   const days = env().RECEIPT_LINK_DAYS
   const expiresAt = days > 0 ? new Date(Date.now() + days * 86_400_000) : null
 
-  const row = await db(ctx).receiptShareLink.create({
+  const row = await prisma.receiptShareLink.create({
     data: {
       organizationId: ctx.organizationId,
-      saleId: sale.id,
+      saleId: target.kind === 'sale' ? target.saleId : null,
+      creditMemoId: target.kind === 'creditMemo' ? target.creditMemoId : null,
       tokenHash: hashToken(token),
       createdByUserId: ctx.userId,
       expiresAt,
@@ -71,18 +95,16 @@ export async function createShareLink(
   return { id: row.id, token, expiresAt }
 }
 
-/** Revokes every live link for a sale — the answer to a forwarded receipt. */
-export async function revokeShareLinks(ctx: AuthContext, saleId: string): Promise<number> {
+/** Revokes every live link for a document — the answer to a forwarded receipt. */
+export async function revokeShareLinks(ctx: AuthContext, target: ShareTarget): Promise<number> {
   const result = await db(ctx).receiptShareLink.updateMany({
-    where: { saleId, revokedAt: null },
+    where: {
+      ...(target.kind === 'sale' ? { saleId: target.saleId } : { creditMemoId: target.creditMemoId }),
+      revokedAt: null,
+    },
     data: { revokedAt: new Date() },
   })
   return result.count
-}
-
-export type ResolvedShareLink = {
-  organizationId: string
-  saleId: string
 }
 
 /**
@@ -91,14 +113,17 @@ export type ResolvedShareLink = {
  * This is the one place the unscoped client is legitimate (docs/04 §5): there
  * is no session, so there is no organization to scope by — the token is what
  * establishes which organization's data may be read, and the caller gets back
- * exactly one sale id and nothing else to vary.
+ * exactly one document id and nothing else to vary.
  */
 export async function resolveShareToken(token: string): Promise<ResolvedShareLink | null> {
   if (!token || token.length < 16 || token.length > 128) return null
 
   const link = await unsafeDb.receiptShareLink.findUnique({
     where: { tokenHash: hashToken(token) },
-    select: { id: true, organizationId: true, saleId: true, expiresAt: true, revokedAt: true },
+    select: {
+      id: true, organizationId: true, saleId: true, creditMemoId: true,
+      expiresAt: true, revokedAt: true,
+    },
   })
   if (!link) return null
   if (link.revokedAt) return null
@@ -113,5 +138,13 @@ export async function resolveShareToken(token: string): Promise<ResolvedShareLin
     })
     .catch(() => undefined)
 
-  return { organizationId: link.organizationId, saleId: link.saleId }
+  const target: ShareTarget | null = link.saleId
+    ? { kind: 'sale', saleId: link.saleId }
+    : link.creditMemoId
+      ? { kind: 'creditMemo', creditMemoId: link.creditMemoId }
+      : null
+  // A link row with neither document set is corrupt, not an invitation to guess.
+  if (!target) return null
+
+  return { organizationId: link.organizationId, target }
 }

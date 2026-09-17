@@ -2,6 +2,7 @@ import type { Metadata } from 'next'
 import { notFound } from 'next/navigation'
 import { Download } from 'lucide-react'
 import { getPublicReceiptDocument } from '@/server/documents/receiptDocument'
+import { getPublicCreditDocument } from '@/server/documents/creditDocument'
 import { resolveShareToken } from '@/server/services/shareLink.service'
 import { ReceiptPaper } from '@/components/receipts/ReceiptPaper'
 
@@ -30,7 +31,10 @@ export default async function PublicReceiptPage(props: PageProps<'/r/[token]'>) 
   // learns nothing about which receipts exist.
   if (!link) notFound()
 
-  const doc = await getPublicReceiptDocument(link.organizationId, link.saleId)
+  const doc =
+    link.target.kind === 'sale'
+      ? await getPublicReceiptDocument(link.organizationId, link.target.saleId)
+      : await getPublicCreditDocument(link.organizationId, link.target.creditMemoId)
 
   return (
     <main className="min-h-dvh bg-surface-sunken px-4 py-6 print:bg-white print:p-0">
@@ -46,7 +50,13 @@ export default async function PublicReceiptPage(props: PageProps<'/r/[token]'>) 
             Download PDF
           </a>
           <p className="mt-3 text-center text-xs text-ink-subtle">
-            Questions about this {Number(doc.balanceDue) > 0 ? 'invoice' : 'receipt'}? Contact{' '}
+            Questions about this{' '}
+            {doc.kind === 'creditMemo'
+              ? 'credit'
+              : Number(doc.balanceDue) > 0
+                ? 'invoice'
+                : 'receipt'}
+            ? Contact{' '}
             {doc.issuer.name}
             {doc.issuer.phone ? ` at ${doc.issuer.phone}` : ''}.
           </p>

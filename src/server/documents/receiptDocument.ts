@@ -132,6 +132,8 @@ function shape(sale: SaleRow, organization: OrgRow, includeSignatureImage: boole
   const issuerExtras = asIssuerExtras(sale.issuerJson)
 
   return {
+    kind: 'sale',
+    documentId: sale.id,
     saleId: sale.id,
     saleNumber: sale.saleNumber,
     receiptNumber: sale.receipt?.receiptNumber ?? sale.saleNumber,

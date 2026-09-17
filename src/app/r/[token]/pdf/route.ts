@@ -1,5 +1,6 @@
 import { notFound } from 'next/navigation'
 import { getPublicReceiptDocument } from '@/server/documents/receiptDocument'
+import { getPublicCreditDocument } from '@/server/documents/creditDocument'
 import { receiptFileName, renderReceiptPdf } from '@/server/documents/receiptPdf'
 import { resolveShareToken } from '@/server/services/shareLink.service'
 import { fileResponse } from '@/app/api/v1/_lib/handler'
@@ -13,7 +14,10 @@ export async function GET(_request: Request, context: RouteContext<'/r/[token]/p
   const link = await resolveShareToken(token)
   if (!link) notFound()
 
-  const doc = await getPublicReceiptDocument(link.organizationId, link.saleId)
+  const doc =
+    link.target.kind === 'sale'
+      ? await getPublicReceiptDocument(link.organizationId, link.target.saleId)
+      : await getPublicCreditDocument(link.organizationId, link.target.creditMemoId)
   const pdf = await renderReceiptPdf(doc, 'full')
 
   return fileResponse(pdf, receiptFileName(doc), 'application/pdf', 'inline')

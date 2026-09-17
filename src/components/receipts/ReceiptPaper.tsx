@@ -19,6 +19,9 @@ const METHOD_LABEL: Record<string, string> = {
 export function ReceiptPaper({ doc }: { doc: ReceiptDocument }) {
   const currency = doc.currency
   const timeZone = doc.timeZone
+  const isCredit = doc.kind === 'creditMemo'
+  // On a credit memo the "balance" is unspent credit, which is a good thing to
+  // have rather than a debt, so the wording flips with it.
   const owed = Number(doc.balanceDue) > 0
 
   return (
@@ -32,6 +35,11 @@ export function ReceiptPaper({ doc }: { doc: ReceiptDocument }) {
           <img src={doc.logoUrl} alt="" className="mx-auto mb-1 max-h-12 w-auto object-contain" />
         ) : null}
         <h1 className="text-base font-extrabold">{doc.issuer.name}</h1>
+        {isCredit ? (
+          <p className="text-[11px] font-bold uppercase tracking-widest text-flame-600">
+            Credit memo
+          </p>
+        ) : null}
         {doc.issuer.addressLines.map((line) => (
           <p key={line} className="text-[11px] text-ink-muted">
             {line}
@@ -60,13 +68,26 @@ export function ReceiptPaper({ doc }: { doc: ReceiptDocument }) {
         </div>
       ) : null}
 
-      <dl className="space-y-0.5 border-y border-dashed border-line py-2 text-[11px]">
-        <Line label={owed ? 'Invoice' : 'Receipt'} value={doc.receiptNumber} />
-        <Line label="Order" value={doc.saleNumber} />
-        <Line label="Date" value={formatDateTime(doc.occurredAt, timeZone)} />
-        <Line label="Sold by" value={doc.soldByName} />
-        <Line label="Terms" value={doc.paymentTermsCode} />
-      </dl>
+      {isCredit ? (
+        <dl className="space-y-0.5 border-y border-dashed border-line py-2 text-[11px]">
+          <Line label="Credit memo" value={doc.receiptNumber} />
+          {doc.credit?.againstSaleNumber ? (
+            <Line label="Original invoice" value={doc.credit.againstSaleNumber} />
+          ) : null}
+          <Line label="Return" value={doc.saleNumber} />
+          <Line label="Date" value={formatDateTime(doc.occurredAt, timeZone)} />
+          <Line label="Reason" value={doc.credit?.reason ?? ''} />
+          {doc.soldByName ? <Line label="Issued by" value={doc.soldByName} /> : null}
+        </dl>
+      ) : (
+        <dl className="space-y-0.5 border-y border-dashed border-line py-2 text-[11px]">
+          <Line label={owed ? 'Invoice' : 'Receipt'} value={doc.receiptNumber} />
+          <Line label="Order" value={doc.saleNumber} />
+          <Line label="Date" value={formatDateTime(doc.occurredAt, timeZone)} />
+          <Line label="Sold by" value={doc.soldByName} />
+          <Line label="Terms" value={doc.paymentTermsCode} />
+        </dl>
+      )}
 
       <div className="text-[11px]">
         <p className="text-sm font-bold">{doc.billTo.name}</p>
@@ -117,35 +138,66 @@ export function ReceiptPaper({ doc }: { doc: ReceiptDocument }) {
         <Line label="Tax" value={money(doc.taxTotal, currency)} />
 
         <div className="flex items-baseline justify-between border-t border-line pt-1 text-base">
-          <dt className="font-bold">Total</dt>
+          <dt className="font-bold">{isCredit ? 'Total credit' : 'Total'}</dt>
           <dd className="tnum font-extrabold">{money(doc.total, currency)}</dd>
         </div>
 
         {doc.payments.map((payment, index) => (
           <Line
             key={`${payment.method}-${index}`}
-            label={`Paid · ${METHOD_LABEL[payment.method] ?? payment.method}${payment.reference ? ` #${payment.reference}` : ''}`}
+            label={`${isCredit ? 'Refunded' : 'Paid'} · ${METHOD_LABEL[payment.method] ?? payment.method}${payment.reference ? ` #${payment.reference}` : ''}`}
             value={money(payment.amount, currency)}
           />
         ))}
 
-        <div className="flex items-baseline justify-between border-t border-line pt-1">
-          <dt className="font-bold">{owed ? 'Balance due' : 'Paid in full'}</dt>
-          <dd
-            className={`tnum text-sm font-extrabold ${owed ? 'text-alert-600' : 'text-cash-700'}`}
-          >
-            {owed ? (
-              money(doc.balanceDue, currency)
-            ) : (
-              <Check className="inline size-4" aria-label="Paid in full" />
-            )}
-          </dd>
-        </div>
+        {isCredit ? (
+          <>
+            {Number(doc.credit?.applied ?? 0) > 0 ? (
+              <Line label="Applied to invoices" value={money(doc.credit!.applied, currency)} />
+            ) : null}
+            <div className="flex items-baseline justify-between border-t border-line pt-1">
+              <dt className="font-bold">Credit remaining</dt>
+              <dd className="tnum text-sm font-extrabold text-cash-700">
+                {money(doc.credit?.remaining ?? '0', currency)}
+              </dd>
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="flex items-baseline justify-between border-t border-line pt-1">
+              <dt className="font-bold">{owed ? 'Balance due' : 'Paid in full'}</dt>
+              <dd
+                className={`tnum text-sm font-extrabold ${owed ? 'text-alert-600' : 'text-cash-700'}`}
+              >
+                {owed ? (
+                  money(doc.balanceDue, currency)
+                ) : (
+                  <Check className="inline size-4" aria-label="Paid in full" />
+                )}
+              </dd>
+            </div>
 
-        {owed && doc.dueDate ? (
-          <Line label="Due" value={formatDate(doc.dueDate, timeZone)} />
-        ) : null}
+            {owed && doc.dueDate ? (
+              <Line label="Due" value={formatDate(doc.dueDate, timeZone)} />
+            ) : null}
+          </>
+        )}
       </dl>
+
+      {isCredit && doc.credit ? (
+        <div className="space-y-1 border-t border-dashed border-line pt-2 text-[11px]">
+          <p className="font-semibold text-ink">{doc.credit.disposition}</p>
+          {doc.credit.returnedLines.length > 0 ? (
+            <ul className="text-ink-muted">
+              {doc.credit.returnedLines.map((line, index) => (
+                <li key={index}>
+                  {line.quantity} × {line.uomLabel} {line.name} — {line.disposition}
+                </li>
+              ))}
+            </ul>
+          ) : null}
+        </div>
+      ) : null}
 
       {doc.notes ? (
         <p className="border-t border-dashed border-line pt-2 text-[11px] text-ink-muted">

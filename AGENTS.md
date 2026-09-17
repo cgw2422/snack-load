@@ -26,6 +26,7 @@ distributors. Mobile-first, multi-tenant, built in phases.
 | `docs/04-authorization.md` | Credentials, sessions, permissions, tenant isolation, secrets |
 | `docs/05-pwa-and-native.md` | Mobile specifics, offline posture, native-app compatibility |
 | `docs/06-roadmap.md` | Phases and their exit criteria |
+| `docs/07-quickbooks-mapping.md` | The object mapping Phase 8 implements |
 
 ## Rules that are not negotiable
 
@@ -42,6 +43,9 @@ distributors. Mobile-first, multi-tenant, built in phases.
 5. **App code uses `db(ctx)`, never `unsafeDb`.** The three legitimate
    exceptions are documented in `docs/04 §5`.
 6. **Financial records are voided or reversed, never deleted.**
+7. **A posted sale is history.** Returns and corrections create new documents
+   that reference the original; they never edit or delete a sale line
+   (`docs/02 §5b`).
 
 ## Working on this codebase
 

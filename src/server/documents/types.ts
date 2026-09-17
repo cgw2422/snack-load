@@ -39,7 +39,18 @@ export type DocumentPayment = {
   reference: string | null
 }
 
+/**
+ * What kind of document this is. A credit memo is the same shape as a receipt —
+ * issuer, bill-to, lines, totals, a void stamp — so it shares the type and the
+ * three renderers rather than growing a parallel stack that can drift out of
+ * step with them (spec §10).
+ */
+export type DocumentKind = 'sale' | 'creditMemo'
+
 export type ReceiptDocument = {
+  kind: DocumentKind
+  /** Sale id, or credit memo id. The renderers never need to know which. */
+  documentId: string
   saleId: string
   saleNumber: string
   receiptNumber: string
@@ -74,6 +85,19 @@ export type ReceiptDocument = {
   signature: { signerName: string | null; capturedAt: string; imagePng: Uint8Array | null } | null
 
   void: { voidedAt: string; reason: string | null; voidedByName: string | null } | null
+
+  /** Credit memos only: the invoice being credited, and what happened next. */
+  credit?: {
+    againstSaleNumber: string | null
+    reason: string
+    /** "Applied to INV-10482", "Refunded by cheque", "Available credit". */
+    disposition: string
+    applied: string
+    refunded: string
+    remaining: string
+    /** Goods that came back, per line, for the customer to check against. */
+    returnedLines: { name: string; quantity: number; uomLabel: string; disposition: string }[]
+  }
 
   /**
    * False when this sale predates the header snapshot and the issuer/bill-to

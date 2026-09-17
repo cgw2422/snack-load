@@ -66,13 +66,26 @@ export async function runAgingReport(
            AND s.status = 'COMPLETED'
            AND s.balance_due > 0
       ),
+      -- Credit a store is holding but has NOT spent on any of the invoices
+      -- above: over-payment sitting on a payment, plus the unspent remainder of
+      -- open credit memos. Shown beside the buckets, never netted into them
+      -- (spec §13).
       credits AS (
-        SELECT p.customer_id, SUM(p.unapplied_amount) AS credit
-          FROM payment p
-         WHERE p.organization_id = ${ctx.organizationId}
-           AND p.status = 'POSTED'
-           AND p.unapplied_amount > 0
-         GROUP BY p.customer_id
+        SELECT customer_id, SUM(credit) AS credit
+          FROM (
+            SELECT p.customer_id, p.unapplied_amount AS credit
+              FROM payment p
+             WHERE p.organization_id = ${ctx.organizationId}
+               AND p.status = 'POSTED'
+               AND p.unapplied_amount > 0
+            UNION ALL
+            SELECT cm.customer_id, cm.remaining_amount AS credit
+              FROM credit_memo cm
+             WHERE cm.organization_id = ${ctx.organizationId}
+               AND cm.status <> 'VOIDED'
+               AND cm.remaining_amount > 0
+          ) held
+         GROUP BY customer_id
       )
       SELECT c.id AS customer_id,
              c.name,
@@ -140,7 +153,12 @@ export async function runAgingReport(
     { key: 'd61to90', label: '61–90', format: 'money' },
     { key: 'over90', label: '90+', format: 'money', primary: true },
     { key: 'total', label: 'Total owed', format: 'money', primary: true },
-    { key: 'credit', label: 'Credit held', format: 'money', hint: 'Unapplied payments' },
+    {
+      key: 'credit',
+      label: 'Credit held',
+      format: 'money',
+      hint: 'Unapplied payments and credit memos',
+    },
     { key: 'oldestDue', label: 'Oldest due', format: 'date' },
   ]
 
@@ -152,16 +170,20 @@ export async function runAgingReport(
       'not the invoice date — so terms are respected: a NET30 invoice written ' +
       '20 days ago is Current, while a COD invoice written 20 days ago is 1–30 ' +
       'days late. Each figure is the invoice\'s own remaining balance, so this ' +
-      'report and the receipt can never disagree. Credit held is unapplied ' +
-      'payment money sitting on the account; it is shown separately rather than ' +
-      'netted off, because it has not been applied to any of these invoices.',
+      'report and the receipt can never disagree — a credit APPLIED to an invoice ' +
+      'has already reduced that invoice\'s balance and so is inside these ' +
+      'buckets. Credit held is the opposite: over-payment and unspent credit ' +
+      'memos that have not been applied to anything. It is shown separately ' +
+      'rather than netted off, precisely because it has not reduced any of these ' +
+      'invoices yet (spec §12).',
     columns,
     rows,
     totals,
     notes: [
       'Aging is as of today. The date range above labels the export; it does not move the buckets.',
-      'Voided sales carry no balance and never appear here.',
+      'Voided sales and voided credit memos carry no balance and never appear here.',
       'Credit held is not subtracted from the total owed — it is money waiting to be applied.',
+      'Applying a credit reduces the invoice it is applied to, and so moves money out of a bucket.',
     ],
     filters: { ...filters, from: range.from, to: range.to },
     appliedTo: await describeFilters(ctx, filters, range),

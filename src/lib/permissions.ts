@@ -18,7 +18,9 @@ export const PERMISSIONS = [
   'routerun:start', 'routerun:complete', 'routerun:closeout', 'routerun:closeout_approve',
   'sale:read', 'sale:read_own', 'sale:create', 'sale:discount', 'sale:void',
   'payment:read', 'payment:create', 'payment:allocate', 'payment:void',
-  'return:create', 'return:approve',
+  'return:create', 'return:approve', 'return:void',
+  'credit:create', 'credit:apply', 'credit:void',
+  'refund:create', 'refund:void',
   'receipt:read', 'receipt:send',
   'report:read', 'report:financial', 'report:export',
   'audit:read',
@@ -35,6 +37,12 @@ export type RoleKey = 'owner' | 'admin' | 'runner' | 'warehouse' | 'office'
  * unscoped `route:read` / `sale:read`. Services inspect which of the pair is
  * present and NARROW THE QUERY — scoping is part of the `where` clause, never a
  * filter applied after fetching (docs/04 §3).
+ *
+ * Returns and money are split on purpose (spec §17). A runner can take goods
+ * back and credit the account at the counter, because that is the job. Handing
+ * over cash (`refund:create`) and unwinding a posted document (`return:void`,
+ * `credit:void`, `refund:void`) are separate grants that a runner does not get:
+ * anyone who can sell must not thereby be able to empty the till.
  */
 const ADMIN_PERMISSIONS: Permission[] = PERMISSIONS.filter(
   (p) => p !== 'role:manage',
@@ -49,7 +57,7 @@ const RUNNER_PERMISSIONS: Permission[] = [
   'routerun:start', 'routerun:complete', 'routerun:closeout',
   'sale:read_own', 'sale:create',
   'payment:create',
-  'return:create',
+  'return:create', 'credit:create',
   'receipt:read', 'receipt:send',
 ]
 
@@ -74,7 +82,9 @@ const OFFICE_PERMISSIONS: Permission[] = [
   'routerun:closeout_approve',
   'sale:read', 'sale:void',
   'payment:read', 'payment:create', 'payment:allocate', 'payment:void',
-  'return:create', 'return:approve',
+  'return:create', 'return:approve', 'return:void',
+  'credit:create', 'credit:apply', 'credit:void',
+  'refund:create', 'refund:void',
   'receipt:read', 'receipt:send',
   'report:read', 'report:financial', 'report:export',
   'audit:read',

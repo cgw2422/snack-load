@@ -157,7 +157,11 @@ export async function emailReceiptAction(
     const to = String(formData.get('to') ?? '').trim()
     const message = String(formData.get('message') ?? '').trim()
 
-    const result = await emailReceipt(ctx, { saleId, to: to || null, message: message || null })
+    const result = await emailReceipt(ctx, {
+      document: { kind: 'sale', id: saleId },
+      to: to || null,
+      message: message || null,
+    })
     revalidatePath(`/receipts/${saleId}`)
 
     return result.status === 'SENT'
@@ -178,7 +182,7 @@ export async function textReceiptAction(
     const saleId = String(formData.get('saleId') ?? '')
     const to = String(formData.get('to') ?? '').trim()
 
-    const result = await textReceipt(ctx, { saleId, to: to || null })
+    const result = await textReceipt(ctx, { document: { kind: 'sale', id: saleId }, to: to || null })
     revalidatePath(`/receipts/${saleId}`)
 
     return result.status === 'SENT'
@@ -193,7 +197,7 @@ export async function textReceiptAction(
 export async function shareLinkAction(saleId: string): Promise<{ url?: string; error?: string }> {
   try {
     const ctx = await requireAuth()
-    const { shareUrl } = await shareLinkForReceipt(ctx, saleId)
+    const { shareUrl } = await shareLinkForReceipt(ctx, { kind: 'sale', id: saleId })
     revalidatePath(`/receipts/${saleId}`)
     return { url: shareUrl }
   } catch (error) {

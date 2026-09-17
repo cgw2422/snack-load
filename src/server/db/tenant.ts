@@ -30,7 +30,8 @@ export const TENANT_MODELS = [
   'RouteAssignmentHistory', 'RouteCloseout', 'RouteCloseoutItem',
   'Sale', 'SaleItem', 'Receipt', 'ReceiptDelivery', 'ReceiptShareLink', 'Signature',
   'Payment', 'PaymentAllocation',
-  'Return', 'ReturnItem', 'CreditMemo', 'CreditMemoApplication',
+  'Return', 'ReturnItem',
+  'CreditMemo', 'CreditMemoItem', 'CreditMemoApplication', 'Refund',
   'DocumentSequence',
   'ImportJob', 'ImportRow',
   'IntegrationConnection', 'ExternalMapping', 'SyncJob', 'SyncLog',
@@ -45,7 +46,8 @@ const TENANT_MODEL_SET: ReadonlySet<string> = new Set(TENANT_MODELS)
  */
 export const UNDELETABLE_MODELS: ReadonlySet<string> = new Set([
   'Sale', 'SaleItem', 'Receipt', 'ReceiptDelivery', 'Payment', 'PaymentAllocation',
-  'Return', 'ReturnItem', 'CreditMemo', 'CreditMemoApplication',
+  'Return', 'ReturnItem',
+  'CreditMemo', 'CreditMemoItem', 'CreditMemoApplication', 'Refund',
   'InventoryTransaction', 'InventoryTransactionLine', 'AuditLog',
 ])
 

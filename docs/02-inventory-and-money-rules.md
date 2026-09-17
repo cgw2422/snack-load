@@ -181,8 +181,13 @@ the client.
 There is no separate invoice table. A `Sale` *is* the invoice; `Receipt` is its
 printable rendering. This avoids a whole class of "invoice and sale disagree" bugs.
 
-### A2 — `Customer.balance = Σ open sale balances − Σ unapplied payments − Σ open credits`
-Maintained in the same transaction as any AR movement, and recomputable.
+### A2 — `Customer.balance = Σ open sale balances`
+A cache of open AR and nothing else. **Credit is deliberately NOT netted into
+it.** A store with a $500 invoice and a $100 credit owes $500 and holds $100;
+saying they owe $400 is a figure that cannot be reconciled against any document,
+because no invoice has been reduced. `getCreditPosition` returns the three
+numbers separately — `openInvoices`, `totalCredit`, `net` — and every screen
+shows at least the first two.
 
 ### A3 — Payment allocation
 A payment carries `amount` and `unappliedAmount`. Allocation strategies:
@@ -203,6 +208,93 @@ balance. Both rows stay visible in history.
 ### A5 — Aging buckets are computed from `dueDate`, not `occurredAt`
 `Current, 1–30, 31–60, 61–90, 90+`, measured against the report's as-of date. A
 sale with `COD` terms has `dueDate = occurredAt`.
+
+---
+
+## 5b. Returns, credits and refunds
+
+**A posted sale is history.** No return edits or deletes a sale line. A return is
+a new document that references the original, carries its own number, and posts
+its own ledger lines. Afterwards these are all separately answerable: what was
+sold, what came back, why, whether stock returned, where it went, what credit
+was issued, whether cash was refunded, whether the credit was applied, and who
+did each of those things.
+
+### R1 — Two independent axes
+
+**Disposition** is what happens to the goods, and it is **per line** — a return
+of three cases can restock two and write one off. **Financial action** is what
+happens to the money. Neither implies the other: a damaged case still earns a
+credit, and a pricing correction earns one with nothing coming back at all.
+
+| Disposition | Ledger type | Destination |
+|---|---|---|
+| `RESTOCK_TRUCK` | `CUSTOMER_RETURN_SELLABLE` | the truck the goods left on |
+| `RESTOCK_WAREHOUSE` | `CUSTOMER_RETURN_SELLABLE` | the warehouse |
+| `DAMAGED` | `CUSTOMER_RETURN_DAMAGED` | `DAMAGED_HOLD` |
+| `EXPIRED` | `CUSTOMER_RETURN_EXPIRED` | `EXPIRED_HOLD` |
+| `SUPPLIER_RETURN` | `CUSTOMER_RETURN_SUPPLIER` | `SUPPLIER_RETURN_HOLD` |
+| `NONE` | — | nothing posted |
+
+### R2 — Returnable quantity is enforced on the server
+
+`sold − Σ(returned on live returns)`, per **sale line**, recomputed inside the
+posting path. A voided return releases its units again. The UI shows the cap as
+a convenience; it is not the guard.
+
+### R3 — Hold locations, not instant write-off
+
+"We took it back" and "we wrote it off" are two events. Goods with a non-sellable
+disposition land in a hold location with `sellable = false`: the ledger records
+that they physically returned, and inventory reports exclude them from on-hand
+and from value. A damaged case therefore never becomes truck stock again, and
+the shrinkage is still visible.
+
+### R4 — A credit is a proportion of what was charged
+
+Never a fresh calculation. `creditForReturn` prorates the original line's
+subtotal, discount and **tax** by the units coming back. Returning a whole line
+credits it exactly, with no rounding drift. This is what keeps a reversal correct
+when the rate, the customer's exemption or the product's taxability has changed
+since — the historical basis wins.
+
+### R5 — The credit memo identity
+
+    amount = Σ applications(APPLIED) + refundedAmount + remainingAmount
+
+`remainingAmount` is unspent credit. Applying reduces exactly one invoice's
+`balanceDue` and writes a `CreditMemoApplication` saying which and how much.
+Allocation settles **the invoice the credit was raised against first**, then
+oldest-first — a store looking at the bill in their hand expects that bill to
+move.
+
+### R6 — A refund is not a reversed payment
+
+Reversing a payment says the money never arrived. A refund says it arrived and
+was given back. `Refund` is its own document with its own number, drawing down
+the credit memo it is paid from.
+
+### R7 — Unwinding has an order
+
+A return will not void once its credit has been **applied** or **refunded**:
+unwinding it would leave an invoice settled by money that no longer exists. The
+dependent document is reversed first (`unapplyCreditMemo`, `voidRefund`), and
+the error says so. A credit memo issued by a return is voided by voiding the
+return, so the goods go back as well as the money.
+
+### R8 — COGS reverses at the historical cost
+
+`CreditMemoItem.unitCostAtSale` is copied from the sale line, not read from the
+product today. A $20 sale that cost $12 and is fully returned moves revenue by
+−$20, COGS by −$12 and gross profit by −$8, whatever the supplier has charged
+since. A credit with no goods behind it reverses revenue and no cost.
+
+### R9 — Permissions are split
+
+`return:create` (take goods back) is separate from `credit:create` (issue
+money), `refund:create` (hand over cash) and the three `*:void` grants. A runner
+holds the first two. Anyone who can sell must not thereby be able to empty the
+till.
 
 ---
 

@@ -104,14 +104,14 @@ describe('reports', () => {
       const report = await runReport(org.ownerCtx, 'sales', { ...WINDOW, groupBy: 'customer' })
 
       // 6 cases at $19.50.
-      expect(report.totals?.revenue).toBe('117.00')
+      expect(report.totals?.gross).toBe('117.00')
       expect(report.totals?.orders).toBe(3)
       expect(report.totals?.units).toBe(72)
 
       expect(rowFor(report.rows, "Joe's Marathon")).toMatchObject({
-        orders: 2, revenue: '97.50', units: 60,
+        orders: 2, gross: '97.50', units: 60,
       })
-      expect(rowFor(report.rows, 'Corner Market')).toMatchObject({ orders: 1, revenue: '19.50' })
+      expect(rowFor(report.rows, 'Corner Market')).toMatchObject({ orders: 1, gross: '19.50' })
     })
 
     it('leaves a voided sale out entirely rather than netting it off', async () => {
@@ -121,7 +121,7 @@ describe('reports', () => {
 
       const report = await runReport(org.ownerCtx, 'sales', { ...WINDOW, groupBy: 'customer' })
 
-      expect(report.totals?.revenue).toBe('39.00')
+      expect(report.totals?.gross).toBe('39.00')
       expect(report.totals?.orders).toBe(1)
       expect(kept.saleId).toBeTruthy()
     })
@@ -134,8 +134,8 @@ describe('reports', () => {
       const byProduct = await runReport(org.ownerCtx, 'sales', { ...WINDOW, groupBy: 'product' })
       const byDay = await runReport(org.ownerCtx, 'sales', { ...WINDOW, groupBy: 'day' })
 
-      expect(byProduct.totals?.revenue).toBe(byCustomer.totals?.revenue)
-      expect(byDay.totals?.revenue).toBe(byCustomer.totals?.revenue)
+      expect(byProduct.totals?.gross).toBe(byCustomer.totals?.gross)
+      expect(byDay.totals?.gross).toBe(byCustomer.totals?.gross)
     })
 
     it('ranks by amount, not by how the amount reads as text', async () => {
@@ -148,7 +148,7 @@ describe('reports', () => {
       const report = await runReport(org.ownerCtx, 'sales', { ...WINDOW, groupBy: 'customer' })
 
       expect(report.rows.map((r) => r.label)).toEqual(['Corner Market', "Joe's Marathon"])
-      expect(report.rows.map((r) => r.revenue)).toEqual(['175.50', '19.50'])
+      expect(report.rows.map((r) => r.gross)).toEqual(['175.50', '19.50'])
     })
 
     it('narrows to one store when asked', async () => {
@@ -156,14 +156,14 @@ describe('reports', () => {
       await sell(secondCustomerId, 4)
 
       const report = await runReport(org.ownerCtx, 'sales', { ...WINDOW, customerId })
-      expect(report.totals?.revenue).toBe('39.00')
+      expect(report.totals?.gross).toBe('39.00')
       expect(report.appliedTo).toContain("Joe's Marathon")
     })
 
     it('excludes a window that does not contain the sale', async () => {
       await sell(customerId, 2)
       const report = await runReport(org.ownerCtx, 'sales', { from: day(30), to: day(20) })
-      expect(report.totals?.revenue).toBe('0.00')
+      expect(report.totals?.gross).toBe('0.00')
       expect(report.rows).toHaveLength(0)
     })
   })
@@ -408,12 +408,31 @@ describe('reports', () => {
       expect(csv).not.toMatch(/(^|,)=HYPERLINK/m)
     })
 
+    it('does not fail a PDF over a character the built-in font cannot draw', async () => {
+      // A store name pasted out of a spreadsheet, with a typographic dash, a
+      // curly apostrophe and a character well outside Latin-1.
+      await db(org.ownerCtx).customer.update({
+        where: { id: customerId },
+        data: { name: 'Ōtaki \u2014 Joe\u2019s Corner \u2212 Store' },
+      })
+      await sell(customerId, 2)
+
+      const report = await runReport(org.ownerCtx, 'sales', { ...WINDOW, groupBy: 'customer' })
+      const pdf = await toPdf(report)
+
+      expect(Buffer.from(pdf.subarray(0, 5)).toString()).toBe('%PDF-')
+      // CSV is UTF-8 and keeps the name exactly as entered.
+      expect(toCsv(report)).toContain('Joe\u2019s Corner')
+    })
+
     it('keeps money at two decimals rather than handing over a float', async () => {
       await sell(customerId, 3)
       const report = await runReport(org.ownerCtx, 'sales', { ...WINDOW, groupBy: 'customer' })
 
       for (const row of report.rows) {
-        expect(String(row.revenue)).toMatch(/^-?\d+\.\d{2}$/)
+        for (const key of ['gross', 'returns', 'net', 'tax']) {
+          expect(String(row[key])).toMatch(/^-?\d+\.\d{2}$/)
+        }
       }
     })
   })
@@ -425,7 +444,7 @@ describe('reports', () => {
       const other = await createTestOrg()
       try {
         const report = await runReport(other.ownerCtx, 'sales', { ...WINDOW })
-        expect(report.totals?.revenue).toBe('0.00')
+        expect(report.totals?.gross).toBe('0.00')
         expect(report.rows).toHaveLength(0)
       } finally {
         await unsafeDb.organization.deleteMany({ where: { id: other.organizationId } })
