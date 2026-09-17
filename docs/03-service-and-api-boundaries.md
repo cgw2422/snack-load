@@ -231,3 +231,57 @@ Producing document bytes and getting them onto paper are separate problems.
 can only offer a print dialog; a native app will drive a Bluetooth thermal
 printer directly. Both consume the same bytes, so neither is a rewrite of the
 other (`05 §6`).
+
+## 9. Reporting
+
+`src/server/reports/**`. One module per report, one registry, three rules.
+
+**Reports read posted transactions.** There is no reporting table, no nightly
+rollup, and no counter incremented on write. Every figure is derived from
+`sale`, `sale_item`, `payment` and `inventory_transaction_line` when it is
+asked for. A second set of totals is how a system starts telling two stories
+about the same month, and the volumes here — thousands of sales a year, not
+millions — do not come close to needing one. The single cache that exists,
+`inventory_balance`, is provably equal to the ledger, and the inventory report
+*checks* that with `findBalanceDrift` rather than assuming it: on disagreement
+it says so at the top instead of reporting a number nobody can reconcile.
+
+If a report ever does need pre-aggregation, the answer is a materialised view
+refreshed from the same transactions — never a table maintained by application
+writes.
+
+**Every financial report states what it measures.** `definition` is a required
+field, not documentation. "Profit" means half a dozen different numbers to half
+a dozen people, and a distributor who reads gross profit as net profit will
+misprice a route. So the gross-profit report says *GROSS profit, not net*, lists
+what is excluded (fuel, wages, vehicle costs, rent, insurance, shrinkage) before
+what is included, and carries that sentence into the CSV, the spreadsheet and
+the PDF. The aging report says its buckets run from the **due date**, not the
+invoice date. The route report separates **billed** from **collected**.
+
+**Money is decimal strings, end to end.** Aggregation happens in Postgres
+`numeric` and is cast to `text` before it crosses into JavaScript. Two
+consequences worth knowing:
+
+- Ordering must be on the numeric aggregate, never on a `::text` column's
+  ordinal — `ORDER BY 4 DESC` over a text-cast money column sorts `"772.68"`
+  above `"2824.05"`.
+- Excel is the one place a decimal string becomes a number, because summing a
+  column is the whole reason somebody asked for Excel. That conversion is in
+  `export.ts` and nowhere else (`02 §M2`).
+
+### Raw SQL
+
+These are the only aggregate queries in the codebase, and raw SQL bypasses the
+tenant extension. Every query passes `organizationId` by hand through
+`reportQuery`, which exists so that is one greppable call rather than a habit
+(`04 §5`). Exported CSV cells beginning `=`, `+`, `-` or `@` are prefixed with
+an apostrophe so a spreadsheet does not execute a store name as a formula.
+
+### Permissions
+
+`report:read` covers volume: sales, customers, inventory, routes, runners.
+`report:financial` is required for cost, margin and receivables — a warehouse
+user can see what moved without seeing what it earns. `report:export` is
+separate again, because letting somebody read a figure on screen is not the same
+as letting them walk out with the book.
