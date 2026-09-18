@@ -5,6 +5,19 @@ import { z } from 'zod'
  * than discovering a missing secret at the moment it signs a session.
  * Nothing here is ever prefixed NEXT_PUBLIC_ (docs/04 §7).
  */
+
+/**
+ * A boolean written by a person into a `.env` file.
+ *
+ * Not `z.coerce.boolean()`: that reads every non-empty string as `true`, so
+ * `QUICKBOOKS_USE_FAKE=false` would turn the fake **on**. Somebody who writes
+ * the word `false` means it.
+ */
+const envFlag = z
+  .string()
+  .optional()
+  .transform((value) => value === 'true' || value === '1')
+
 const schema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   DATABASE_URL: z.string().min(1, 'DATABASE_URL is required'),
@@ -56,7 +69,7 @@ const schema = z.object({
    * Refused outright in production (below). A silently faked accounting
    * integration is worse than no integration: the books look synced and are not.
    */
-  QUICKBOOKS_USE_FAKE: z.coerce.boolean().default(false),
+  QUICKBOOKS_USE_FAKE: envFlag,
 
   /**
    * The bearer token a scheduler presents to `/api/internal/quickbooks/sync`.

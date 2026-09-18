@@ -28,8 +28,8 @@ const catalog: CatalogSnapshot = {
       baseUomLabel: 'Bag',
       taxable: true,
       uoms: [
-        { id: 'u-takis-bag', label: 'Bag', baseUnitsPerUom: 1, price: '1.99', isDefaultSaleUom: false },
-        { id: 'u-takis-case', label: 'Case of 12', baseUnitsPerUom: 12, price: '20.00', isDefaultSaleUom: true },
+        { id: 'u-takis-bag', code: 'EACH', label: 'Bag', baseUnitsPerUom: 1, price: '1.99', isDefaultSaleUom: false },
+        { id: 'u-takis-case', code: 'CASE', label: 'Case of 12', baseUnitsPerUom: 12, price: '20.00', isDefaultSaleUom: true },
       ],
     },
     {
@@ -40,7 +40,7 @@ const catalog: CatalogSnapshot = {
       baseUomLabel: 'Bottle',
       taxable: false,
       uoms: [
-        { id: 'u-water-case', label: 'Case of 24', baseUnitsPerUom: 24, price: '9.49', isDefaultSaleUom: true },
+        { id: 'u-water-case', code: 'CASE', label: 'Case of 24', baseUnitsPerUom: 24, price: '9.49', isDefaultSaleUom: true },
       ],
     },
   ],

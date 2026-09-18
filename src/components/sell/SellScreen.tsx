@@ -345,6 +345,7 @@ export function SellScreen({
         locationId={cart?.sellingLocationId ?? sellingLocation.id}
         onPick={addProduct}
         placeholder="Search or scan a product"
+        offlineFallback
       />
 
       {priceError ? (
@@ -375,7 +376,13 @@ export function SellScreen({
                       <p className="truncate text-sm font-semibold text-ink">{line.name}</p>
                       <p className="text-xs text-ink-muted">
                         {priced ? `${money(priced.unitPrice, currency)} / ${priced.uomLabel.toLowerCase()}` : '…'}
-                        {priced && priced.priceSource !== 'STANDARD' ? ' · special price' : ''}
+                        {/* An estimate is a list price, not a negotiated one.
+                            Calling it special would be a claim this device has
+                            no way to make. */}
+                        {priced && !estimated && priced.priceSource !== 'STANDARD'
+                          ? ' · special price'
+                          : ''}
+                        {priced && estimated ? ' · list price' : ''}
                       </p>
                       {short ? (
                         <p className="flex items-center gap-1 text-xs font-semibold text-alert-600">

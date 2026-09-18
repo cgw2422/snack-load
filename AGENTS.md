@@ -24,7 +24,7 @@ distributors. Mobile-first, multi-tenant, built in phases.
 | `docs/02-inventory-and-money-rules.md` | **The invariants.** Money, units, the ledger, AR, idempotency |
 | `docs/03-service-and-api-boundaries.md` | The service contract, both transports, imports, integrations |
 | `docs/04-authorization.md` | Credentials, sessions, permissions, tenant isolation, secrets |
-| `docs/05-pwa-and-native.md` | Mobile specifics, offline posture, native-app compatibility |
+| `docs/05-pwa-and-native.md` | **The offline contract as built.** Caching strategies, the measured 3G budget, the mutation queue, native-app compatibility |
 | `docs/06-roadmap.md` | Phases and their exit criteria |
 | `docs/07-quickbooks-mapping.md` | The object mapping Phase 8 implements |
 | `docs/08-quickbooks-integration.md` | **The integration as built.** OAuth, sync states, duplicates, tax, COGS, voids, split payments, the scheduled worker |
@@ -47,6 +47,11 @@ distributors. Mobile-first, multi-tenant, built in phases.
 7. **A posted sale is history.** Returns and corrections create new documents
    that reference the original; they never edit or delete a sale line
    (`docs/02 §5b`).
+8. **Offline, the client carries intent and never money.** A queued mutation
+   holds customer, product, unit and quantity. Any total it shows is an estimate,
+   labelled as one and carried as `clientEstimate` so the server can say the
+   price moved. Replay is safe only because the idempotency key travels with the
+   entry and is never regenerated (`docs/05 §3`).
 
 ## Working on this codebase
 
@@ -57,7 +62,9 @@ pnpm test           # vitest: unit + integration against a real Postgres
 pnpm lint
 pnpm db:migrate     # create and apply a migration
 pnpm db:seed        # rebuild the demo organization
-pnpm icons          # regenerate PWA icons from public/brand/icon.svg
+pnpm icons          # regenerate PWA icons and iOS launch images
+pnpm verify:offline # the offline journey in Chromium, against a production build
+pnpm measure:3g     # the 3G performance budget in docs/05 §2a
 ```
 
 - Integration tests need a database whose name contains `test`; the suite

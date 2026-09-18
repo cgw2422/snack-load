@@ -16,6 +16,8 @@ export type SnapshotStamp = {
 
 export type CatalogUom = {
   id: string
+  /** EACH, CASE… the same code the picker shows online. */
+  code: string
   label: string
   baseUnitsPerUom: number
   /** List price. Customer and price-group overrides are resolved server-side. */

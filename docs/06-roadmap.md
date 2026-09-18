@@ -16,6 +16,31 @@ with tests around its financial or inventory invariants.
 | **8 — QuickBooks** | OAuth connect, entity mapping, outbox + sync worker, retries and backoff, sync logs, error UI, manual and auto sync. | Intuit outage never blocks a sale; failed jobs retry and surface. |
 | **9 — PWA & resilience** | Installability polish, caching strategies, offline route reads, durable mutation queue, performance budget work. | Runner workflow usable on a mid-tier Android over 3G; queued sales replay without double-posting. |
 
+### Phase 9 as delivered
+
+Both exit criteria are met and re-checkable:
+
+- **Usable on a mid-tier Android over 3G.** Measured, not asserted — the table
+  in `docs/05 §2a`. Cold on Fast 3G with a 4× CPU penalty the store list is
+  tappable at 807 ms and the screen is hydrated at 1.84 s, on 250 KB. Once
+  installed, any connection, it is under 600 ms and zero bytes. `pnpm measure:3g`
+  reproduces it.
+- **Queued sales replay without double-posting.** Proved three ways: 17 unit
+  tests over the queue, 11 integration tests driving the real envelope, schemas
+  and services, and `pnpm verify:offline`, which takes the journey in Chromium —
+  lose signal, sell from the cached catalogue, save on the phone, reconnect,
+  reload twice — and asserts exactly one POST reached the server.
+
+What Phase 9 deliberately did **not** do, and why it is safe to leave:
+
+- The warehouse screens — receiving, adjustments, transfers, truck loads — do
+  not work offline. Their submits are not queued and their product search needs
+  the whole catalogue, which a phone is not given. They are done standing at a
+  warehouse with WiFi, not in the back of a store.
+- Returns and credit memos are not queued. A return references a posted sale and
+  its original cost; queueing one would mean deciding client-side which sale it
+  belongs to, and `docs/02 §5b` puts that decision on the server.
+
 **Standing rule:** nothing in a later phase may require reshaping the schema or the
 service contracts established in Phase 1. Where a later capability needs a column,
 that column exists now (idempotency keys, `unitCostAtSale`, `ExternalMapping`,

@@ -68,6 +68,37 @@ timestamp — a phone with a wrong clock would otherwise report a figure taken
 thirty seconds ago as four hours old. A stale balance presented as live is worse
 than no balance.
 
+## 2a. The performance budget, measured
+
+The exit criterion is "usable on a mid-tier Android over 3G", which is a claim
+about a device nobody on this project is holding — so it is emulated and
+measured rather than asserted. `pnpm measure:3g` runs Chrome's own 3G profiles
+with the CPU slowed fourfold, against a production build and the demo seed.
+
+Two moments, because they are what a runner actually experiences: **tappable**
+is the server-rendered list on screen and ready for a thumb, before any
+JavaScript has run; **loaded** is everything arrived and hydrated.
+
+| Profile | First paint | Tappable | Loaded | Over the wire |
+|---|---|---|---|---|
+| No throttling, cold | 112 ms | 161 ms | 205 ms | 251 KB |
+| Fast 3G + 4× CPU, cold | 792 ms | 807 ms | 1.84 s | 250 KB |
+| Fast 3G + 4× CPU, installed | 264 ms | 428 ms | 516 ms | **0 KB** |
+| Slow 3G + 4× CPU, cold | 2.06 s | 2.14 s | 6.13 s | 250 KB |
+| Slow 3G + 4× CPU, installed | 276 ms | 432 ms | 513 ms | **0 KB** |
+
+The budget these numbers set, and what breaks it:
+
+- **250 KB compressed for a cold load.** Adding a charting library or a second
+  date library to a runner screen would blow it; both belong behind a dynamic
+  import on the desktop reports instead.
+- **Under 2 s to interactive on Fast 3G.** The cold Slow-3G figure of six
+  seconds is the install cost and is paid once.
+- **Zero bytes once installed, on any connection.** This is the whole point of
+  the cache-first shell: the installed app is under 600 ms whether the link is
+  fast, slow, or gone. If a change makes an installed load fetch anything on the
+  critical path, the strategy table above is wrong and one of them has to give.
+
 ## 3. Offline posture
 
 **Now (Phase 1 onward)**
@@ -107,7 +138,7 @@ than no balance.
 - `completeStop` is replay-safe: the same outcome twice returns the same answer;
   a *different* outcome on a finished stop is a conflict, not an overwrite.
 
-## 3a. What the runner sees (Phase 9, as built)
+## 4. What the runner sees (Phase 9, as built)
 
 Every screen that can be used without a signal says so, and says what it is
 showing instead of the truth.
@@ -132,12 +163,27 @@ another runner has sold off the same truck. Offline, a stock shortfall warns but
 does not block — `available` is as old as the cached balance snapshot, and the
 server is the one that refuses, on arrival.
 
+### Checking it stayed true
+
+Two scripts, both against a production build and the demo seed, because the
+service worker is deliberately not registered in development:
+
+```bash
+pnpm verify:offline   # 20 checks: cache, estimate, queue, replay, 320px, fallback
+pnpm measure:3g       # the table above, re-measured
+```
+
+`verify:offline` drives the actual journey in Chromium — sign in, cache the day,
+cut the connection, find a product from the cached list, save a sale on the
+phone, reconnect, reload twice — and asserts what the phase exists to
+guarantee: **one POST per queued sale, however many times it is replayed.**
+
 **What we explicitly refuse to build:** an offline mode that assigns receipt
 numbers locally or decrements stock client-side and merges later. That is how you
 double-post a $500 sale, and it is unrecoverable once a customer has a printed
 receipt.
 
-## 4. Decisions made for the native app
+## 5. Decisions made for the native app
 
 | Decision | Why it matters later |
 |---|---|

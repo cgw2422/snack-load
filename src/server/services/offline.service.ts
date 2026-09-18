@@ -67,7 +67,7 @@ export async function getTruckCatalog(ctx: AuthContext): Promise<CatalogSnapshot
             where: { active: true },
             orderBy: { baseUnitsPerUom: 'asc' },
             select: {
-              id: true, label: true, baseUnitsPerUom: true, price: true,
+              id: true, code: true, label: true, baseUnitsPerUom: true, price: true,
               isDefaultSaleUom: true,
             },
           },
@@ -91,6 +91,7 @@ export async function getTruckCatalog(ctx: AuthContext): Promise<CatalogSnapshot
         taxable: balance.product.taxable,
         uoms: balance.product.uoms.map((uom) => ({
           id: uom.id,
+          code: uom.code,
           label: uom.label,
           baseUnitsPerUom: uom.baseUnitsPerUom,
           price: toAmountString(m(uom.price)),

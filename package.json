@@ -17,6 +17,8 @@
     "db:seed": "prisma db seed",
     "db:reset": "prisma migrate reset --force",
     "icons": "node scripts/generate-icons.mjs",
+    "verify:offline": "node scripts/verify-offline.mjs",
+    "measure:3g": "node scripts/measure-3g.mjs",
     "postinstall": "prisma generate"
   },
   "dependencies": {

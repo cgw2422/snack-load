@@ -6,7 +6,7 @@ import { Eraser } from 'lucide-react'
 /**
  * Signature capture (spec §27). A canvas with pointer events, so it works with a
  * finger, a stylus or a mouse. The PNG travels with the sale; a native app later
- * swaps the capture surface without changing storage or rendering (docs/05 §4).
+ * swaps the capture surface without changing storage or rendering (docs/05 §5).
  */
 export function SignaturePad({
   onChange,

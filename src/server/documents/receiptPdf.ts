@@ -13,7 +13,7 @@ import { toWinAnsi } from './winAnsi'
  * Nothing here talks to a printer. Producing bytes and getting them to paper
  * are separate problems: the browser can only offer a print dialog, while a
  * native app will drive a Bluetooth thermal printer directly. Both consume
- * these same bytes (docs/05 §6).
+ * these same bytes (docs/05 §5).
  */
 
 const INK = rgb(0.06, 0.09, 0.16)
