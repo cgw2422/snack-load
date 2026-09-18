@@ -44,9 +44,9 @@ export default async function AppLayout({ children }: LayoutProps<'/'>) {
           />
 
           <ConnectionBanner />
+          <QueueTray />
           <main className="flex-1 pb-nav md:pb-8">{children}</main>
 
-          <QueueTray />
           <BottomNav items={primary} />
         </div>
       </div>

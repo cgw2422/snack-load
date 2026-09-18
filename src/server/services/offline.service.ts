@@ -4,6 +4,11 @@ import { requirePermission } from '@/server/auth/context'
 import { m, toAmountString } from '@/server/domain/money'
 import { resolveSellingLocation } from './sale.service'
 import { getRunnerDay, type RunnerDay } from './routerun.service'
+import type {
+  BalanceSnapshot,
+  CatalogItem,
+  CatalogSnapshot,
+} from '@/lib/offline/types'
 
 /**
  * What a phone is allowed to keep when the signal goes (docs/05 §2).
@@ -35,21 +40,7 @@ export async function getRouteDay(ctx: AuthContext): Promise<Snapshot<RunnerDay>
   return { ...day, asOf: new Date().toISOString() }
 }
 
-export type CatalogItem = {
-  productId: string
-  sku: string
-  name: string
-  brand: string | null
-  baseUomLabel: string
-  taxable: boolean
-  uoms: { id: string; label: string; baseUnitsPerUom: number; price: string; isDefaultSaleUom: boolean }[]
-}
-
-export type CatalogSnapshot = Snapshot<{
-  locationId: string
-  locationName: string
-  items: CatalogItem[]
-}>
+export type { BalanceSnapshot, CatalogItem, CatalogSnapshot }
 
 /**
  * The catalogue subset that is actually on the truck.
@@ -108,12 +99,6 @@ export async function getTruckCatalog(ctx: AuthContext): Promise<CatalogSnapshot
       })),
   }
 }
-
-export type BalanceSnapshot = Snapshot<{
-  locationId: string
-  locationName: string
-  balances: { productId: string; quantity: number }[]
-}>
 
 /**
  * What is on the truck right now, in base units.

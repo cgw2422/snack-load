@@ -136,6 +136,7 @@ export default async function StopPage(props: PageProps<'/routes/[id]/stops/[sto
             <CompleteStopForm
               stopId={stop.id}
               routeId={route.id}
+              customerName={stop.customerName}
               hasSale={Boolean(stop.saleTotal)}
               defaultRescheduleDate={nextWeek.toISOString().slice(0, 10)}
             />

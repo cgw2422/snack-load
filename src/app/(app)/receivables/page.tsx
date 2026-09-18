@@ -126,6 +126,7 @@ export default async function ReceivablesPage(props: PageProps<'/receivables'>) 
         {can(ctx, 'payment:create') ? (
           <PaymentForm
             customerId={customer.id}
+            customerName={customer.name}
             balance={Number(balance) > 0 ? balance : '0.00'}
             currency={currency}
           />

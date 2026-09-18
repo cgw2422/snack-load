@@ -2,12 +2,15 @@
 
 import { useActionState, useRef, useState } from 'react'
 import { useFormStatus } from 'react-dom'
+import { useOffline } from 'next/offline'
 import { useRouter } from 'next/navigation'
-import { AlertCircle, Check } from 'lucide-react'
+import { AlertCircle, Check, CloudOff } from 'lucide-react'
 import { Button } from '@/components/ui/Button'
 import { Card } from '@/components/ui/Card'
 import { Field, Input, Select } from '@/components/ui/Field'
 import { recordPaymentAction, type SellState } from '@/app/(app)/sell/actions'
+import { useOwner } from '@/components/offline/OfflineRuntime'
+import { enqueue } from '@/lib/offline/queue'
 
 const EMPTY: SellState = {}
 
@@ -38,13 +41,18 @@ function SubmitButton({ label }: { label: string }) {
  */
 export function PaymentForm({
   customerId,
+  customerName,
   balance,
   currency,
 }: {
   customerId: string
+  /** For the queue tray, so a pending payment names the store. */
+  customerName: string
   balance: string
   currency: string
 }) {
+  const offline = useOffline()
+  const owner = useOwner()
   const [method, setMethod] = useState('CASH')
   const [amount, setAmount] = useState(balance)
   const router = useRouter()
@@ -60,11 +68,18 @@ export function PaymentForm({
       key.current ??= crypto.randomUUID()
       formData.set('idempotencyKey', key.current)
 
-      const result = await recordPaymentAction(previous, formData)
+      // No signal: the payment is written to this phone and sent later. The
+      // amount is a fact about cash that changed hands, so it travels; where it
+      // lands is still decided server-side, oldest invoice first (docs/02 §A3).
+      const result =
+        offline && owner
+          ? await queuePayment({ owner, formData, customerName, idempotencyKey: key.current })
+          : await recordPaymentAction(previous, formData)
+
       if (!result.error) {
         key.current = null
         setAmount('')
-        router.refresh()
+        if (!result.queued) router.refresh()
       }
       return result
     },
@@ -90,9 +105,17 @@ export function PaymentForm({
       {state.message ? (
         <div
           role="status"
-          className="flex items-start gap-2.5 rounded-xl border border-cash-500/30 bg-cash-50 px-3.5 py-3 text-sm text-cash-700 dark:bg-cash-700/15 dark:text-cash-100"
+          className={
+            state.queued
+              ? 'flex items-start gap-2.5 rounded-xl border border-alert-500/30 bg-alert-500/10 px-3.5 py-3 text-sm text-alert-600 dark:text-alert-400'
+              : 'flex items-start gap-2.5 rounded-xl border border-cash-500/30 bg-cash-50 px-3.5 py-3 text-sm text-cash-700 dark:bg-cash-700/15 dark:text-cash-100'
+          }
         >
-          <Check className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+          {state.queued ? (
+            <CloudOff className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+          ) : (
+            <Check className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+          )}
           <span>{state.message}</span>
         </div>
       ) : null}
@@ -153,4 +176,49 @@ export function PaymentForm({
       </form>
     </Card>
   )
+}
+
+/**
+ * Queueing money taken with no signal (docs/05 §3).
+ *
+ * The balance on screen does not move: it is the server's figure, and the
+ * payment has not reached it. Saying "paid in full" here would be the lie the
+ * whole queue exists to avoid — the tray reports when it actually lands.
+ */
+async function queuePayment(args: {
+  owner: string
+  formData: FormData
+  customerName: string
+  idempotencyKey: string
+}): Promise<SellState> {
+  const amount = String(args.formData.get('amount') ?? '').trim()
+  if (!amount || Number(amount) <= 0) return { error: 'Enter how much was paid.' }
+
+  try {
+    await enqueue({
+      id: args.idempotencyKey,
+      owner: args.owner,
+      kind: 'payment',
+      endpoint: '/api/v1/payments',
+      label: `${args.customerName} · ${amount} taken`,
+      payload: {
+        customerId: args.formData.get('customerId'),
+        method: args.formData.get('method'),
+        amount,
+        checkNumber: args.formData.get('checkNumber') || undefined,
+        referenceNumber: args.formData.get('referenceNumber') || undefined,
+        notes: args.formData.get('notes') || undefined,
+        strategy: 'OLDEST_FIRST',
+        idempotencyKey: args.idempotencyKey,
+      },
+    })
+
+    return {
+      queued: true,
+      message:
+        'Saved on this phone. The balance here will not move until it reaches the office.',
+    }
+  } catch {
+    return { error: 'This phone could not save that payment. Write the details down.' }
+  }
 }

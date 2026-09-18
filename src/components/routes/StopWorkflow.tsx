@@ -2,12 +2,15 @@
 
 import { useActionState, useEffect, useState } from 'react'
 import { useFormStatus } from 'react-dom'
+import { useOffline } from 'next/offline'
 import { useRouter } from 'next/navigation'
 import { AlertCircle, CircleSlash, Clock, DoorClosed, MapPin, StickyNote } from 'lucide-react'
 import { Button } from '@/components/ui/Button'
 import { Card } from '@/components/ui/Card'
 import { Field, Input, Select } from '@/components/ui/Field'
 import { arriveAction, completeStopAction, type RouteState } from '@/app/(app)/routes/actions'
+import { useOwner } from '@/components/offline/OfflineRuntime'
+import { enqueue } from '@/lib/offline/queue'
 
 const EMPTY: RouteState = {}
 
@@ -81,21 +84,39 @@ function Finish({ label, variant }: { label: string; variant: 'cash' | 'secondar
 export function CompleteStopForm({
   stopId,
   routeId,
+  customerName,
   hasSale,
   defaultRescheduleDate,
 }: {
   stopId: string
   routeId: string
+  /** For the queue tray, so a pending stop reads like the runner's day. */
+  customerName: string
   hasSale: boolean
   defaultRescheduleDate: string
 }) {
-  const [state, action] = useActionState(completeStopAction, EMPTY)
+  const offline = useOffline()
+  const owner = useOwner()
+
+  const [state, action] = useActionState(
+    async (previous: RouteState, formData: FormData) => {
+      // No signal: the outcome is written to this phone and sent later. It is
+      // safe to replay because `completeStop` treats the same outcome twice as
+      // the same answer rather than a conflict (docs/05 §3).
+      if (offline && owner) return queueStopOutcome({ owner, formData, stopId, customerName })
+      return completeStopAction(previous, formData)
+    },
+    EMPTY,
+  )
   const [outcome, setOutcome] = useState<string | null>(null)
   const router = useRouter()
 
   // A finished stop hands the runner straight on to the next one. Navigation is
   // a genuine external system, which is what an effect is for — doing it during
   // render would make render impure.
+  //
+  // A *queued* outcome carries no next stop, so the runner goes back to the
+  // route list rather than being sent to a stop the server has not chosen yet.
   useEffect(() => {
     if (!state.message) return
     router.push(
@@ -195,6 +216,54 @@ export function CompleteStopForm({
       )}
     </div>
   )
+}
+
+/**
+ * Queueing how a stop went (docs/05 §3).
+ *
+ * The entry's id is the stop's — one outcome per stop, so a runner who taps
+ * twice in a dead zone overwrites their own pending entry instead of queueing
+ * a second one that would arrive and conflict with the first.
+ */
+async function queueStopOutcome(args: {
+  owner: string
+  formData: FormData
+  stopId: string
+  customerName: string
+}): Promise<RouteState> {
+  const outcome = String(args.formData.get('outcome') ?? '')
+  const rescheduledToDate = String(args.formData.get('rescheduledToDate') ?? '')
+
+  if (outcome === 'RESCHEDULED' && !rescheduledToDate) {
+    return { error: 'Choose the day this store should be visited instead.' }
+  }
+
+  try {
+    await enqueue({
+      id: `stop:${args.stopId}`,
+      owner: args.owner,
+      kind: 'stop',
+      endpoint: `/api/v1/route-stops/${args.stopId}/outcome`,
+      label: `${args.customerName} · ${LABELS[outcome] ?? outcome.toLowerCase()}`,
+      payload: {
+        stopId: args.stopId,
+        outcome,
+        reason: args.formData.get('reason') || undefined,
+        notes: args.formData.get('notes') || undefined,
+        rescheduledToDate: rescheduledToDate || undefined,
+      },
+    })
+    return { message: 'Saved on this phone. It sends itself when there’s a signal.' }
+  } catch {
+    return { error: 'This phone could not save that. Try again before you drive off.' }
+  }
+}
+
+const LABELS: Record<string, string> = {
+  COMPLETED: 'finished',
+  NO_SALE: 'no sale',
+  STORE_CLOSED: 'store closed',
+  RESCHEDULED: 'come back later',
 }
 
 const REASONS = {

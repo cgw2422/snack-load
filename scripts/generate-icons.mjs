@@ -4,9 +4,11 @@
  */
 import { readFile, writeFile, mkdir } from 'node:fs/promises'
 import sharp from 'sharp'
+import devices from '../src/lib/splash-devices.json' with { type: 'json' }
 
 const SRC = 'public/brand/icon.svg'
 const OUT = 'public/icons'
+const SPLASH = 'public/icons/splash'
 
 // A maskable icon is cropped to a circle on some launchers, so the artwork has
 // to sit inside the middle 80%. We scale the mark down and pad with brand navy.
@@ -62,4 +64,41 @@ async function toIco(png, size) {
   entry.writeUInt32LE(png.length, 8)
   entry.writeUInt32LE(header.length + entry.length, 12)
   return Buffer.concat([header, entry, png])
+}
+
+/**
+ * iOS launch images.
+ *
+ * iOS will not scale one of these: a launch image is used only if its
+ * dimensions match the device exactly, and otherwise the app boots to a white
+ * flash. So one file per device, portrait only — the manifest pins the app to
+ * portrait — over the brand navy, with the mark at a fifth of the width.
+ *
+ * The device list lives in src/lib/splash-devices.json and is shared with the
+ * metadata that references these files, so the two cannot drift.
+ */
+await mkdir(SPLASH, { recursive: true })
+
+for (const device of devices) {
+  const mark = Math.round(device.width / 5)
+  const art = await sharp(svg, { density: 512 }).resize(mark, mark).png().toBuffer()
+
+  await sharp({
+    create: {
+      width: device.width,
+      height: device.height,
+      channels: 4,
+      background: '#0b2141',
+    },
+  })
+    .composite([
+      {
+        input: art,
+        top: Math.round((device.height - mark) / 2),
+        left: Math.round((device.width - mark) / 2),
+      },
+    ])
+    .png({ compressionLevel: 9, palette: true })
+    .toFile(`${SPLASH}/${device.name}.png`)
+  console.log(`  ${SPLASH}/${device.name}.png`)
 }

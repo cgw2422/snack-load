@@ -19,6 +19,14 @@ export type SellState = {
   message?: string
   saleId?: string
   receiptNumber?: string
+  /**
+   * The sale was written to this phone's queue, not to the server.
+   *
+   * Kept distinct from `message` so the screen cannot congratulate a runner on
+   * a sale that has not been posted. Nothing is charged, no receipt number
+   * exists, and the tray is what tells them when that changes (docs/05 §3).
+   */
+  queued?: boolean
 }
 
 function toState(error: unknown, fallback: string): SellState {

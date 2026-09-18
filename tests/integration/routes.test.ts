@@ -513,7 +513,7 @@ describe('routes', () => {
       // "Closed" and "completed" are not the same visit; overwriting one with
       // the other would lose what actually happened.
       await expect(
-        completeStop(mike.ctx, { stopId: route.stops[0].id, outcome: 'CLOSED' }),
+        completeStop(mike.ctx, { stopId: route.stops[0].id, outcome: 'STORE_CLOSED' }),
       ).rejects.toThrow(/already marked/i)
     })
 

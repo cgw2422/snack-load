@@ -82,7 +82,11 @@ export default async function SellPage(props: PageProps<'/sell'>) {
 
   const customer = await db(ctx).customer.findFirst({
     where: { id: customerId },
-    select: { id: true, name: true, balance: true, paymentTermsCode: true, active: true },
+    select: {
+      id: true, name: true, balance: true, paymentTermsCode: true, active: true,
+      taxExempt: true,
+      taxRate: { select: { rate: true } },
+    },
   })
   if (!customer || !customer.active) redirect('/sell')
 
@@ -102,6 +106,11 @@ export default async function SellPage(props: PageProps<'/sell'>) {
           name: customer.name,
           balance: toAmountString(customer.balance),
           termsCode: customer.paymentTermsCode,
+          // Sent so the screen can still show a total when the server cannot
+          // be reached. It is an estimate and is labelled as one; the posted
+          // sale is priced server-side on arrival (docs/05 §3).
+          taxExempt: customer.taxExempt,
+          taxRate: customer.taxRate?.rate.toString() ?? '0',
         }}
         routeStopId={firstValue(raw.stopId)}
         currency={currency}

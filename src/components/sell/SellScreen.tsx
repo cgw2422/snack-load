@@ -2,8 +2,9 @@
 
 import { useActionState, useCallback, useEffect, useRef, useState, useTransition } from 'react'
 import { useFormStatus } from 'react-dom'
+import { useOffline } from 'next/offline'
 import { useRouter } from 'next/navigation'
-import { AlertCircle, Check, Minus, Plus, Trash2, TriangleAlert } from 'lucide-react'
+import { AlertCircle, Check, CloudOff, Minus, Plus, Trash2, TriangleAlert } from 'lucide-react'
 import { Button } from '@/components/ui/Button'
 import { Card } from '@/components/ui/Card'
 import { Field, Input, Select } from '@/components/ui/Field'
@@ -13,6 +14,12 @@ import { SignaturePad } from './SignaturePad'
 import { checkoutAction, priceCartAction, type SellState } from '@/app/(app)/sell/actions'
 import type { PricedCart } from '@/server/services/sale.service'
 import type { ProductHit, ProductUomOption } from '@/components/stock/types'
+import { useOwner } from '@/components/offline/OfflineRuntime'
+import { ageLabel } from '@/lib/offline/age'
+import { estimateCart, type Estimate } from '@/lib/offline/estimate'
+import { enqueue } from '@/lib/offline/queue'
+import { BALANCES, CATALOG, recall, type Stored } from '@/lib/offline/snapshots'
+import type { BalanceSnapshot, CatalogSnapshot } from '@/lib/offline/types'
 
 const EMPTY: SellState = {}
 
@@ -32,11 +39,20 @@ const TENDERS = [
   { value: 'NONE', label: 'On account' },
 ]
 
-function CheckoutButton({ total, disabled }: { total: string; disabled: boolean }) {
+function CheckoutButton({
+  total,
+  label,
+  disabled,
+}: {
+  total: string
+  /** Offline the button does not say "checkout": nothing is being charged yet. */
+  label?: string
+  disabled: boolean
+}) {
   const { pending } = useFormStatus()
   return (
     <Button type="submit" variant="cash" size="lg" block disabled={pending || disabled}>
-      {pending ? 'Saving…' : `Checkout · ${total}`}
+      {pending ? 'Saving…' : `${label ?? 'Checkout'} · ${total}`}
     </Button>
   )
 }
@@ -57,7 +73,15 @@ export function SellScreen({
   sellingLocation,
   initialLines,
 }: {
-  customer: { id: string; name: string; balance: string; termsCode: string }
+  customer: {
+    id: string
+    name: string
+    balance: string
+    termsCode: string
+    /** For the offline estimate only. The posted sale is priced server-side. */
+    taxExempt: boolean
+    taxRate: string
+  }
   routeStopId?: string
   currency: string
   /** Where stock will come off. Resolved on the server; the client only shows it. */
@@ -70,15 +94,12 @@ export function SellScreen({
   // twice (docs/02 §I1). It is deliberately never read during render.
   const idempotencyKey = useRef<string | null>(null)
 
-  const [state, action] = useActionState(
-    async (previous: SellState, formData: FormData) => {
-      idempotencyKey.current ??= crypto.randomUUID()
-      formData.set('idempotencyKey', idempotencyKey.current)
-      return checkoutAction(previous, formData)
-    },
-    EMPTY,
-  )
+  const offline = useOffline()
+  const owner = useOwner()
+
   const [lines, setLines] = useState<CartLine[]>(initialLines ?? [])
+  const [catalog, setCatalog] = useState<Stored<CatalogSnapshot> | null>(null)
+  const [balances, setBalances] = useState<Stored<BalanceSnapshot> | null>(null)
   const [priced, setPriced] = useState<PricedCart | null>(null)
   const [pricedError, setPricedError] = useState<string | null>(null)
   const [method, setMethod] = useState('CASH')
@@ -87,12 +108,88 @@ export function SellScreen({
   const [pricing, startPricing] = useTransition()
   const router = useRouter()
 
+  /**
+   * What the screen shows when the server cannot be asked.
+   *
+   * Only computed while offline. The estimate is deliberately not used as a
+   * fallback when a *price* request merely fails online — that would hide a
+   * real pricing error behind a plausible number.
+   */
+  const estimate: Estimate | null =
+    offline && catalog
+      ? estimateCart({
+          lines: lines.map((l) => ({
+            productId: l.productId,
+            productUomId: l.productUomId,
+            quantity: l.quantity,
+          })),
+          catalog: catalog.value,
+          balances: balances?.value ?? null,
+          taxRate: customer.taxRate,
+          taxExempt: customer.taxExempt,
+        })
+      : null
+
+  const [state, action] = useActionState(
+    async (previous: SellState, formData: FormData) => {
+      idempotencyKey.current ??= crypto.randomUUID()
+      formData.set('idempotencyKey', idempotencyKey.current)
+
+      // No signal: the sale goes into this phone's queue instead, carrying
+      // intent and the estimate the runner was shown — never a price
+      // (docs/05 §3). It is posted, numbered and charged when it lands.
+      if (offline && owner) {
+        const queued = await queueSale({
+          owner,
+          formData,
+          idempotencyKey: idempotencyKey.current,
+          customerName: customer.name,
+          estimate: estimate?.total,
+        })
+        // A new cart needs a new key; reusing this one would make the next sale
+        // replay as this one (docs/02 §I1). Cleared here rather than in an
+        // effect so the screen cannot render the queued sale's cart again.
+        idempotencyKey.current = null
+        if (queued.queued) {
+          setLines([])
+          setPriced(null)
+          setTendered('')
+          setSignature(null)
+        }
+        return queued
+      }
+
+      return checkoutAction(previous, formData)
+    },
+    EMPTY,
+  )
+
+  // Kept ready before it is needed: a runner who loses signal mid-cart cannot
+  // fetch the catalogue to price what is already in front of them.
+  useEffect(() => {
+    let cancelled = false
+    void Promise.all([recall<CatalogSnapshot>(CATALOG), recall<BalanceSnapshot>(BALANCES)]).then(
+      ([held, stock]) => {
+        if (cancelled) return
+        setCatalog(held ?? null)
+        setBalances(stock ?? null)
+      },
+    )
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
   // Re-price on the server whenever the cart changes. Debounced so a held
   // stepper does not fire a request per tap.
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   useEffect(() => {
     clearTimeout(timer.current)
     if (lines.length === 0) return
+    // With no signal the framework would hold this request open and retry it on
+    // reconnect. The runner needs a number now, so the cached estimate answers
+    // instead and the server prices the sale when it lands.
+    if (offline) return
 
     timer.current = setTimeout(() => {
       startPricing(async () => {
@@ -110,12 +207,13 @@ export function SellScreen({
     }, 150)
 
     return () => clearTimeout(timer.current)
-  }, [lines, customer.id])
+  }, [lines, customer.id, offline])
 
   // A completed sale goes straight to its receipt — that is what the store wants.
   useEffect(() => {
     if (state.saleId) router.push(`/receipts/${state.saleId}`)
   }, [state.saleId, router])
+
 
   const addProduct = useCallback((product: ProductHit, uoms: ProductUomOption[]) => {
     const usable =
@@ -156,13 +254,23 @@ export function SellScreen({
   }
 
   // An empty cart is worth nothing; no effect has to remember to say so.
-  const cart = lines.length === 0 ? null : priced
-  const priceError = lines.length === 0 ? null : pricedError
+  const served = lines.length === 0 ? null : priced
+
+  const cart = estimate ?? served
+  const estimated = cart !== null && cart === estimate
+  const priceError = lines.length === 0 || offline ? null : pricedError
 
   const total = cart?.total ?? '0.00'
   // The ledger will refuse a line the truck cannot cover, so say so here rather
   // than letting the runner find out after they have taken the money.
-  const short = cart?.lines.filter((l) => l.baseQuantity > l.available) ?? []
+  //
+  // Offline this is advisory: `available` is as old as the cached balance
+  // snapshot, so it warns but does not block — the server is the one that
+  // refuses, on arrival.
+  const short = estimated ? [] : (cart?.lines.filter((l) => l.baseQuantity > l.available) ?? [])
+  const shortOnCachedStock = estimated
+    ? (cart?.lines.filter((l) => l.baseQuantity > l.available) ?? [])
+    : []
   const change =
     method !== 'NONE' && tendered && cart
       ? Number(tendered) - Number(cart.total)
@@ -196,9 +304,17 @@ export function SellScreen({
       {state.message ? (
         <div
           role="status"
-          className="flex items-start gap-2.5 rounded-xl border border-cash-500/30 bg-cash-50 px-3.5 py-3 text-sm text-cash-700 dark:bg-cash-700/15 dark:text-cash-100"
+          className={
+            state.queued
+              ? 'flex items-start gap-2.5 rounded-xl border border-alert-500/30 bg-alert-500/10 px-3.5 py-3 text-sm text-alert-600 dark:text-alert-400'
+              : 'flex items-start gap-2.5 rounded-xl border border-cash-500/30 bg-cash-50 px-3.5 py-3 text-sm text-cash-700 dark:bg-cash-700/15 dark:text-cash-100'
+          }
         >
-          <Check className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+          {state.queued ? (
+            <CloudOff className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+          ) : (
+            <Check className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+          )}
           <span>{state.message}</span>
         </div>
       ) : null}
@@ -211,6 +327,11 @@ export function SellScreen({
               Selling from {cart?.sellingLocationName ?? sellingLocation.name} ·{' '}
               {customer.termsCode}
             </p>
+            {estimated && catalog ? (
+              <p className="mt-1 text-xs font-semibold text-alert-600 dark:text-alert-400">
+                Estimated from prices {ageLabel(catalog)}. The office prices it when it sends.
+              </p>
+            ) : null}
           </div>
           {Number(customer.balance) > 0 ? (
             <Pill tone="alert">Owes {money(customer.balance, currency)}</Pill>
@@ -403,7 +524,9 @@ export function SellScreen({
                   value={money(cart?.taxTotal ?? '0.00', currency)}
                 />
                 <div className="flex items-baseline justify-between border-t border-line pt-1.5">
-                  <dt className="text-base font-bold text-ink">Total</dt>
+                  <dt className="text-base font-bold text-ink">
+                    {estimated ? 'Estimated total' : 'Total'}
+                  </dt>
                   <dd className="tnum text-xl font-extrabold text-ink">
                     {money(total, currency)}
                   </dd>
@@ -420,9 +543,38 @@ export function SellScreen({
                 </p>
               ) : null}
 
+              {shortOnCachedStock.length > 0 ? (
+                <p className="flex items-start gap-1.5 text-xs font-semibold text-alert-600">
+                  <TriangleAlert className="mt-0.5 size-3 shrink-0" aria-hidden="true" />
+                  <span>
+                    By the last count{balances ? ` (${ageLabel(balances)})` : ''} the truck is short
+                    on {shortOnCachedStock.map((l) => l.productName).join(', ')}. The office will
+                    refuse the line if that is still true when this sends.
+                  </span>
+                </p>
+              ) : null}
+
+              {estimated && cart.unknown.length > 0 ? (
+                <p className="flex items-start gap-1.5 text-xs font-semibold text-stop-600">
+                  <TriangleAlert className="mt-0.5 size-3 shrink-0" aria-hidden="true" />
+                  <span>
+                    This phone has no cached price for{' '}
+                    {cart.unknown.join(', ')}, so it cannot show you a total. Take the order on
+                    paper, or wait for a signal.
+                  </span>
+                </p>
+              ) : null}
+
               <CheckoutButton
                 total={money(total, currency)}
-                disabled={!cart || pricing || lines.length === 0 || short.length > 0}
+                label={estimated ? 'Save on this phone' : undefined}
+                disabled={
+                  !cart ||
+                  (!offline && pricing) ||
+                  lines.length === 0 ||
+                  short.length > 0 ||
+                  (estimated && cart.unknown.length > 0)
+                }
               />
             </div>
           </div>
@@ -430,6 +582,79 @@ export function SellScreen({
       ) : null}
     </form>
   )
+}
+
+/**
+ * Writing the sale to this phone instead of to the server (docs/05 §3).
+ *
+ * The payload is exactly what the live Server Action would have sent, minus
+ * anything computed: the same `cart` JSON the form already carries, the same
+ * stable idempotency key, the tendered amount as a fact about cash that changed
+ * hands rather than as a price. `/api/v1/sales` validates it with the same
+ * schema and runs the same `checkout`, so a queued sale cannot take a different
+ * path from one taken with a signal.
+ *
+ * A failure to *queue* is reported as a failure. There is nowhere else to put
+ * the sale, and a runner who is told it is safe when it is not will find out at
+ * the end of the day.
+ */
+async function queueSale(args: {
+  owner: string
+  formData: FormData
+  idempotencyKey: string
+  customerName: string
+  estimate?: string
+}): Promise<SellState> {
+  const { formData } = args
+
+  try {
+    const cart = JSON.parse(String(formData.get('cart') ?? '{}')) as Record<string, unknown>
+    const method = String(formData.get('method') ?? 'NONE')
+    const tendered = String(formData.get('amount') ?? '').trim()
+    const signatureData = String(formData.get('signatureData') ?? '')
+
+    const lines = Array.isArray(cart.lines) ? cart.lines : []
+    if (lines.length === 0) return { error: 'Add at least one product.' }
+
+    await enqueue({
+      id: args.idempotencyKey,
+      owner: args.owner,
+      kind: 'sale',
+      endpoint: '/api/v1/sales',
+      label: `${args.customerName} · ${lines.length} ${lines.length === 1 ? 'line' : 'lines'}`,
+      clientEstimate: args.estimate,
+      payload: {
+        ...cart,
+        idempotencyKey: args.idempotencyKey,
+        notes: formData.get('notes') || undefined,
+        payment:
+          method === 'NONE' || !tendered || Number(tendered) <= 0
+            ? null
+            : {
+                method,
+                // What the runner physically took. Not a price, and not a
+                // total — the server decides that on arrival.
+                amount: tendered,
+                checkNumber: formData.get('checkNumber') || undefined,
+                referenceNumber: formData.get('referenceNumber') || undefined,
+              },
+        signature: signatureData
+          ? { signerName: formData.get('signerName') || undefined, imageDataUrl: signatureData }
+          : null,
+      },
+    })
+
+    return {
+      queued: true,
+      message:
+        'Saved on this phone. It is not posted yet — it sends itself, and the tray will tell you when it lands.',
+    }
+  } catch {
+    return {
+      error:
+        'This phone could not save the sale. Do not take the money on it — write the order down.',
+    }
+  }
 }
 
 function Row({ label, value }: { label: string; value: string }) {

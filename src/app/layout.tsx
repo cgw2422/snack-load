@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from 'next'
 import { Inter } from 'next/font/google'
 import type { ReactNode } from 'react'
 import './globals.css'
+import { startupImages } from '@/lib/splash'
 
 const inter = Inter({
   subsets: ['latin'],
@@ -22,6 +23,10 @@ export const metadata: Metadata = {
     capable: true,
     title: 'SnackLoad',
     statusBarStyle: 'black-translucent',
+    // iOS ignores the manifest's background colour and boots a home-screen app
+    // to a white flash unless it is handed a launch image that matches the
+    // device exactly. One per phone, portrait only (docs/05 §2).
+    startupImage: startupImages,
   },
   icons: {
     icon: [

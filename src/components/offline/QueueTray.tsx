@@ -34,8 +34,12 @@ export function QueueTray() {
   if (waiting === 0 && queue.blocked === 0 && queue.stranded === 0) return null
 
   return (
-    <div className="above-nav fixed inset-x-0 z-40 px-3 pb-2 md:bottom-3">
-      <div className="mx-auto max-w-2xl overflow-hidden rounded-card border border-line bg-surface-raised shadow-[0_-4px_16px_rgba(15,23,42,0.12)]">
+    // In flow, directly under the connection banner, rather than pinned to the
+    // bottom of the screen. The bottom is already spoken for on the screen that
+    // matters most: the sell screen's running total sits there, and a tray
+    // covering the checkout button would be worse than one that scrolls.
+    <div className="px-3 pt-3 md:px-6">
+      <div className="mx-auto max-w-2xl overflow-hidden rounded-card border border-line bg-surface-raised shadow-[0_1px_2px_rgba(15,23,42,0.04)]">
         <button
           type="button"
           onClick={() => setOpen((current) => !current)}

@@ -107,6 +107,31 @@ than no balance.
 - `completeStop` is replay-safe: the same outcome twice returns the same answer;
   a *different* outcome on a finished stop is a conflict, not an overwrite.
 
+## 3a. What the runner sees (Phase 9, as built)
+
+Every screen that can be used without a signal says so, and says what it is
+showing instead of the truth.
+
+| Surface | Offline behaviour |
+|---|---|
+| Connection banner | `useOffline()` from `next/offline`, rendered in the app shell. Not a toast: losing signal is a condition that lasts, and it stays on screen. It reads the framework's detector rather than `navigator.onLine`, which calls a captive portal "online" — exactly what a store's guest WiFi is. |
+| Queue tray | Appears only when something is waiting. Shows what is queued, what the office refused (with the server's own words), and what belongs to another sign-in on this phone. A refused entry can be retried or discarded; a *pending* one cannot be discarded at all. |
+| Sell screen | Prices from the cached catalogue with `computeSaleTotals` — the same pure function the server prices with, so an estimate and the posted sale only ever differ because something really changed. The button says **Save on this phone**, the figure says **Estimated total**, and both carry the age of the prices behind them. A product this device has no cached price for blocks checkout by name rather than being silently left out of the total. |
+| Stop screen | Queues the outcome under the stop's own id, so a second tap overwrites the pending entry instead of queueing a conflicting one. |
+| Payment screen | Queues the amount taken. The balance on screen does not move: it is the server's figure and the payment has not reached it. |
+| More screen | Explains how to install — Safari's share sheet on iOS, the browser menu elsewhere — and says why: a home-screen app gets its own storage, so the queue is not sharing a bucket Safari may evict. |
+
+The offline estimate is the one place a client computes money, and it is fenced
+in accordingly: it is never sent as a price, it rides on the queued entry only
+as `clientEstimate`, and its sole job is to let the runner be told the total
+moved rather than discover it on a statement.
+
+What it cannot know, and does not pretend to: customer-specific and price-group
+prices, a price changed in the office since the catalogue was cached, and stock
+another runner has sold off the same truck. Offline, a stock shortfall warns but
+does not block — `available` is as old as the cached balance snapshot, and the
+server is the one that refuses, on arrival.
+
 **What we explicitly refuse to build:** an offline mode that assigns receipt
 numbers locally or decrements stock client-side and merges later. That is how you
 double-post a $500 sale, and it is unrecoverable once a customer has a printed

@@ -6,6 +6,7 @@ import { MORE_NAV, visibleItems } from '@/lib/navigation'
 import { Card } from '@/components/ui/Card'
 import { NavIcon } from '@/components/shell/NavIcon'
 import { logoutAction } from '@/app/(auth)/actions'
+import { InstallHint } from '@/components/offline/InstallHint'
 
 export const metadata: Metadata = { title: 'More' }
 
@@ -47,6 +48,8 @@ export default async function MorePage() {
           ))}
         </ul>
       </Card>
+
+      <InstallHint />
 
       <form action={logoutAction}>
         <button
