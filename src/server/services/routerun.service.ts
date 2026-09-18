@@ -137,7 +137,25 @@ export async function completeStop(
   if (!stop) throw notFound('That stop')
   await requireRouteAccess(ctx, stop.routeId)
 
-  if (FINISHED.has(stop.status)) throw conflict('That stop is already done.')
+  /**
+   * Replaying the same outcome is success, not a conflict (docs/05 §3).
+   *
+   * A stop completed on a dead cell tower gets queued and sent again when the
+   * signal comes back, and the runner must not be told their van is broken
+   * because the first attempt actually landed. Finishing a stop is naturally
+   * idempotent on `(stop, outcome)`: it is already exactly where it is being
+   * asked to go.
+   *
+   * A *different* finished outcome is a real conflict — "closed" and
+   * "completed" are not the same visit, and silently overwriting one with the
+   * other would lose what happened.
+   */
+  if (FINISHED.has(stop.status)) {
+    if (stop.status === input.outcome) return describeFinishedRoute(prisma, stop.routeId)
+    throw conflict(
+      `That stop was already marked ${FINISHED_LABEL[stop.status] ?? stop.status.toLowerCase()}.`,
+    )
+  }
 
   if (input.outcome === 'RESCHEDULED' && !input.rescheduledToDate) {
     throw conflict('Choose the day this store should be visited instead.')
@@ -214,6 +232,27 @@ export async function completeStop(
   })
 
   return result
+}
+
+/** What `completeStop` returns, recomputed for a replay of work already done. */
+async function describeFinishedRoute(
+  prisma: ReturnType<typeof db>,
+  routeId: string,
+): Promise<{ routeCompleted: boolean; nextStopId: string | null }> {
+  const remaining = await prisma.routeStop.findMany({
+    where: { routeId, status: { notIn: [...FINISHED] as never[] } },
+    orderBy: { sequence: 'asc' },
+    select: { id: true },
+  })
+  return { routeCompleted: remaining.length === 0, nextStopId: remaining[0]?.id ?? null }
+}
+
+const FINISHED_LABEL: Record<string, string> = {
+  COMPLETED: 'completed',
+  NO_SALE: 'a no-sale',
+  STORE_CLOSED: 'closed',
+  SKIPPED: 'skipped',
+  RESCHEDULED: 'rescheduled',
 }
 
 export async function addStopNote(
