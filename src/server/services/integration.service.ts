@@ -5,6 +5,7 @@ import { unsafeDb } from '@/server/db/client'
 import type { AuthContext } from '@/server/auth/context'
 import { requirePermission } from '@/server/auth/context'
 import { conflict, notFound } from '@/lib/errors'
+import { m, toAmountString } from '@/server/domain/money'
 import { env } from '@/lib/env'
 import { open, safeEqual, seal } from '@/server/crypto/secretBox'
 import { createQuickBooksClient } from '@/server/integrations/quickbooks/client'
@@ -21,7 +22,7 @@ import {
 import { readSettings, type QuickBooksSettings } from '@/server/integrations/quickbooks/settings'
 import type { QboAccount, QuickBooksClient, TokenSet } from '@/server/integrations/quickbooks/types'
 import { drain, type DrainResult } from '@/server/integrations/quickbooks/sync/worker'
-import { enqueue } from '@/server/integrations/quickbooks/sync/queue'
+import { countExpiredLeases, enqueue } from '@/server/integrations/quickbooks/sync/queue'
 import { writeAudit } from './audit.service'
 
 /**
@@ -58,9 +59,22 @@ export type ConnectionView = {
   settings: QuickBooksSettings
   health: {
     pending: number
+    retrying: number
     blocked: number
     needsAttention: number
     syncedToday: number
+    /** Jobs a worker claimed and never finished. Zero, or something died. */
+    staleLeases: number
+  }
+  /**
+   * Whether the scheduled worker is doing its job — from measured state, never
+   * asserted (docs/08 §18). `UNKNOWN` means it has never run here, which is an
+   * honest answer and a different one from "unhealthy".
+   */
+  worker: {
+    status: 'HEALTHY' | 'LATE' | 'STALLED' | 'UNKNOWN' | 'NOT_CONFIGURED'
+    lastRunAt: Date | null
+    detail: string
   }
 }
 
@@ -81,17 +95,20 @@ export async function describeConnection(ctx: AuthContext): Promise<ConnectionVi
     select: {
       status: true, environment: true, companyName: true, realmId: true, connectedAt: true,
       lastSyncAt: true, lastSyncAttemptAt: true, lastError: true, settingsJson: true,
+      lastWorkerRunAt: true,
     },
   })
 
   const midnight = new Date()
   midnight.setHours(0, 0, 0, 0)
 
-  const [pending, blocked, needsAttention, syncedToday] = await Promise.all([
-    prisma.syncJob.count({ where: { status: { in: ['PENDING', 'RETRYING', 'IN_PROGRESS'] } } }),
+  const [pending, retrying, blocked, needsAttention, syncedToday, staleLeases] = await Promise.all([
+    prisma.syncJob.count({ where: { status: { in: ['PENDING', 'IN_PROGRESS'] } } }),
+    prisma.syncJob.count({ where: { status: 'RETRYING' } }),
     prisma.syncJob.count({ where: { status: 'BLOCKED_DEPENDENCY' } }),
     prisma.syncJob.count({ where: { status: { in: ['NEEDS_ATTENTION', 'FAILED'] } } }),
     prisma.syncJob.count({ where: { status: 'SYNCED', completedAt: { gte: midnight } } }),
+    countExpiredLeases(prisma, ctx.organizationId),
   ])
 
   return {
@@ -105,8 +122,65 @@ export async function describeConnection(ctx: AuthContext): Promise<ConnectionVi
     lastError: connection?.lastError ?? null,
     available: oauthConfig() !== null,
     settings: readSettings(connection?.settingsJson),
-    health: { pending, blocked, needsAttention, syncedToday },
+    health: { pending, retrying, blocked, needsAttention, syncedToday, staleLeases },
+    worker: describeWorker(connection?.lastWorkerRunAt ?? null, staleLeases),
   }
+}
+
+/**
+ * Worker health from evidence, not from hope.
+ *
+ * The only thing we actually know is when the scheduler last swept this tenant,
+ * and whether any job was claimed and abandoned. So those are what it reports,
+ * and where there is no evidence it says so rather than showing a reassuring
+ * green tick that means nothing (§19).
+ */
+const WORKER_LATE_MS = 30 * 60 * 1000
+const WORKER_STALLED_MS = 3 * 60 * 60 * 1000
+
+function describeWorker(
+  lastRunAt: Date | null,
+  staleLeases: number,
+): ConnectionView['worker'] {
+  if (!env().SYNC_WORKER_TOKEN) {
+    return {
+      status: 'NOT_CONFIGURED',
+      lastRunAt,
+      detail:
+        'No scheduled worker is configured on this server, so syncing only happens when somebody presses Sync now.',
+    }
+  }
+
+  if (!lastRunAt) {
+    return {
+      status: 'UNKNOWN',
+      lastRunAt: null,
+      detail: 'The scheduled worker has not run for this company yet.',
+    }
+  }
+
+  const age = Date.now() - lastRunAt.getTime()
+
+  if (staleLeases > 0) {
+    return {
+      status: 'STALLED',
+      lastRunAt,
+      detail:
+        `${staleLeases} job${staleLeases === 1 ? '' : 's'} were picked up and never finished. ` +
+        'They will be retried automatically on the next sweep.',
+    }
+  }
+  if (age > WORKER_STALLED_MS) {
+    return {
+      status: 'STALLED',
+      lastRunAt,
+      detail: 'The scheduled worker has not run in hours. Check the scheduler on the host.',
+    }
+  }
+  if (age > WORKER_LATE_MS) {
+    return { status: 'LATE', lastRunAt, detail: 'The scheduled worker is running less often than expected.' }
+  }
+  return { status: 'HEALTHY', lastRunAt, detail: 'The scheduled worker is running on time.' }
 }
 
 // ─── connecting ──────────────────────────────────────────────────────────────
@@ -862,4 +936,107 @@ export async function mapManually(
     where: { entityType, localId, status: { in: ['NEEDS_ATTENTION', 'FAILED'] } },
     data: { status: 'PENDING', nextAttemptAt: new Date(), lastError: null, errorCategory: null },
   })
+}
+
+// ─── split-payment reconciliation ────────────────────────────────────────────
+
+export type PaymentReconciliation = {
+  paymentId: string
+  customerName: string
+  receivedAt: Date
+  method: string
+  /** What the runner actually collected. */
+  collected: string
+  /** What QuickBooks holds for it, which can legitimately be less. */
+  inQuickBooks: string
+  components: {
+    representation: 'INVOICE_PAYMENT' | 'SALES_RECEIPT' | 'UNAPPLIED'
+    saleNumber: string | null
+    amount: string
+    externalId: string | null
+    explanation: string
+  }[]
+  /** Collected minus the sum of the components. Zero, or there is a bug. */
+  unaccounted: string
+  balanced: boolean
+}
+
+/**
+ * Why a QuickBooks payment total differs from the SnackLoad one (docs/08 §18).
+ *
+ * The answer is rows, not arithmetic a support person has to redo: every slice
+ * of the collection says where it lives, and the three add up to what was
+ * taken. Without this the screen shows $300 here and $200 there and no reason,
+ * which is indistinguishable from a bug.
+ */
+export async function describePaymentSync(
+  ctx: AuthContext,
+  paymentId: string,
+): Promise<PaymentReconciliation | null> {
+  requirePermission(ctx, 'org:manage_integrations')
+  const prisma = db(ctx)
+
+  const payment = await prisma.payment.findFirst({
+    where: { id: paymentId },
+    select: {
+      id: true, amount: true, method: true, receivedAt: true,
+      customer: { select: { name: true } },
+      syncAllocations: {
+        orderBy: { createdAt: 'asc' },
+        select: {
+          representation: true, amount: true, externalId: true, explanation: true,
+          sale: { select: { saleNumber: true } },
+        },
+      },
+    },
+  })
+  if (!payment) return null
+
+  const components = payment.syncAllocations.map((row) => ({
+    representation: row.representation,
+    saleNumber: row.sale?.saleNumber ?? null,
+    amount: toAmountString(row.amount),
+    externalId: row.externalId,
+    explanation: row.explanation,
+  }))
+
+  const accounted = components.reduce((total, row) => total.plus(m(row.amount)), m(0))
+  const inQuickBooks = components
+    .filter((row) => row.representation !== 'SALES_RECEIPT')
+    .reduce((total, row) => total.plus(m(row.amount)), m(0))
+
+  return {
+    paymentId: payment.id,
+    customerName: payment.customer.name,
+    receivedAt: payment.receivedAt,
+    method: payment.method,
+    collected: toAmountString(payment.amount),
+    inQuickBooks: toAmountString(inQuickBooks),
+    components,
+    unaccounted: toAmountString(m(payment.amount).minus(accounted)),
+    balanced: m(payment.amount).equals(accounted),
+  }
+}
+
+/**
+ * The payments whose two totals differ, which are the only ones worth a screen.
+ * A collection entirely against invoices needs no explanation.
+ */
+export async function listSplitPayments(
+  ctx: AuthContext,
+  limit = 20,
+): Promise<PaymentReconciliation[]> {
+  requirePermission(ctx, 'org:manage_integrations')
+  const prisma = db(ctx)
+
+  const rows = await prisma.paymentSyncAllocation.findMany({
+    where: { representation: 'SALES_RECEIPT' },
+    orderBy: { createdAt: 'desc' },
+    take: limit * 4,
+    select: { paymentId: true },
+  })
+
+  const ids = [...new Set(rows.map((row) => row.paymentId))].slice(0, limit)
+  const described = await Promise.all(ids.map((id) => describePaymentSync(ctx, id)))
+  return described.filter((entry): entry is PaymentReconciliation => entry !== null)
 }

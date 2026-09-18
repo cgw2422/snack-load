@@ -565,3 +565,133 @@ export function buildCogsJournal(
     taxProvenance: 'SNAPSHOT',
   }
 }
+
+// ─── reversals ───────────────────────────────────────────────────────────────
+
+/**
+ * Reversing what QuickBooks cannot void (docs/08 §17).
+ *
+ * Intuit documents `operation=void` for **Invoice, SalesReceipt, Payment and
+ * BillPayment only**. For a credit memo, a refund receipt or a journal entry
+ * the only verb on offer is *delete*, which removes the record outright. That
+ * is not what SnackLoad means by a void, and it is not something to do to
+ * somebody's books on our initiative.
+ *
+ * So those three are reversed with a compensating action instead:
+ *
+ *  - a **credit memo** and a **refund receipt** are reduced to zero and marked,
+ *    keeping the document, its number and its history, with nothing left on it
+ *    to apply or to bank;
+ *  - a **journal entry** gets a second, opposite entry — the textbook reversal,
+ *    and the only one that leaves both halves visible to an accountant.
+ */
+
+/**
+ * Strips the fields QuickBooks derives.
+ *
+ * An update echoes the document we read back, and that copy carries `TotalAmt`,
+ * `Balance`, `RemainingCredit` and `void` — all of which QuickBooks computes.
+ * Sending them back is at best ignored and at worst believed: the first version
+ * of this zeroed every line and then handed QuickBooks the old total alongside,
+ * so the document read as unchanged.
+ */
+function withoutDerived<T extends Record<string, unknown>>(document: T): T {
+  const copy = { ...document }
+  delete copy.TotalAmt
+  delete copy.Balance
+  delete copy.RemainingCredit
+  delete copy.void
+  return copy
+}
+
+/** Zeroes a sales-style document in place, keeping every line for the record. */
+function zeroLines(lines: QboSalesLine[]): QboSalesLine[] {
+  return lines.map((line) => ({
+    ...line,
+    Amount: 0,
+    ...(line.SalesItemLineDetail
+      ? { SalesItemLineDetail: { ...line.SalesItemLineDetail, UnitPrice: 0 } }
+      : {}),
+  }))
+}
+
+export function buildVoidedCreditMemo(
+  existing: QboCreditMemo,
+  reason: string,
+): BuiltDocument<QboCreditMemo> {
+  return {
+    payload: {
+      ...withoutDerived(existing),
+      Line: zeroLines(existing.Line ?? []),
+      // The tax goes with the merchandise it was charged on.
+      ...(existing.TxnTaxDetail ? { TxnTaxDetail: { ...existing.TxnTaxDetail, TotalTax: 0 } } : {}),
+      PrivateNote: appendVoidNote(existing.PrivateNote, reason),
+    },
+    expected: { total: '0.00', tax: '0.00' },
+    taxProvenance: 'SNAPSHOT',
+  }
+}
+
+export function buildVoidedRefundReceipt(
+  existing: QboRefundReceipt,
+  reason: string,
+): BuiltDocument<QboRefundReceipt> {
+  return {
+    payload: {
+      ...withoutDerived(existing),
+      Line: zeroLines(existing.Line ?? []),
+      ...(existing.TxnTaxDetail ? { TxnTaxDetail: { ...existing.TxnTaxDetail, TotalTax: 0 } } : {}),
+      PrivateNote: appendVoidNote(existing.PrivateNote, reason),
+    },
+    expected: { total: '0.00', tax: '0.00' },
+    taxProvenance: 'SNAPSHOT',
+  }
+}
+
+/**
+ * The opposite entry. Debits become credits and the amounts stay the same, so
+ * the period nets to nothing and both entries remain readable — which is what
+ * an accountant expects to find, rather than a journal that has disappeared.
+ */
+export function buildReversingJournal(
+  original: { periodStart: Date; periodEnd: Date; totalCogs: string; batchId: string },
+  settings: QuickBooksSettings,
+  reason: string,
+): BuiltDocument<QboJournalEntry> {
+  const forward = buildCogsJournal(
+    {
+      id: original.batchId,
+      periodStart: original.periodStart,
+      periodEnd: original.periodEnd,
+      totalCogs: original.totalCogs,
+      salesCogs: original.totalCogs,
+      returnCogs: '0.00',
+      saleCount: 0,
+      returnCount: 0,
+    },
+    settings,
+  )
+
+  return {
+    payload: {
+      TxnDate: forward.payload.TxnDate,
+      Line: forward.payload.Line.map((line) => ({
+        ...line,
+        Description: `Reversal — ${line.Description ?? ''}`.trim(),
+        JournalEntryLineDetail: {
+          ...line.JournalEntryLineDetail,
+          PostingType:
+            line.JournalEntryLineDetail.PostingType === 'Debit' ? 'Credit' : 'Debit',
+        },
+      })),
+      PrivateNote: `Reverses SnackLoad COGS batch ${original.batchId} · ${reason}`,
+    },
+    expected: { total: original.totalCogs, tax: '0.00' },
+    taxProvenance: 'SNAPSHOT',
+  }
+}
+
+function appendVoidNote(existing: string | undefined, reason: string): string {
+  const note = `VOIDED IN SNACKLOAD: ${reason}`.slice(0, 900)
+  return existing ? `${existing} · ${note}` : note
+}

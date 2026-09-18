@@ -7,7 +7,10 @@ import { conflict, notFound } from '@/lib/errors'
 import { m, toAmountString } from '@/server/domain/money'
 import { dateOnly, endOfLocalDate, startOfLocalDate } from '@/lib/dates'
 import { writeAudit } from './audit.service'
-import { enqueueIfConnected } from '@/server/integrations/quickbooks/sync/hooks'
+import {
+  enqueueIfConnected,
+  enqueueVoidIfConnected,
+} from '@/server/integrations/quickbooks/sync/hooks'
 
 /**
  * Periodic cost of goods sold (docs/08 §9).
@@ -242,10 +245,15 @@ export async function voidCogsBatch(
   if (batch.status === 'VOIDED') throw conflict('That COGS journal was already voided.')
 
   await prisma.$transaction(async (tx) => {
-    // Never deleted, and the QuickBooks mapping is left alone: the journal
-    // entry over there is real, and unwinding it is a decision for whoever
-    // keeps the books (docs/08 §10).
+    // Never deleted here, and never deleted over there either: QuickBooks has
+    // no void for a journal entry, so the reversal is a second, opposite entry
+    // and both halves stay readable (docs/08 §17).
     await tx.cogsJournalBatch.update({ where: { id: batchId }, data: { status: 'VOIDED' } })
+
+    await enqueueVoidIfConnected(tx, ctx.organizationId, {
+      entityType: 'CogsJournalBatch',
+      localId: batchId,
+    })
     await writeAudit(tx, ctx, {
       action: 'cogs.voided',
       entityType: 'CogsJournalBatch',

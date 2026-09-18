@@ -56,6 +56,7 @@ export default async function CreditMemoPage(props: PageProps<'/credits/[id]'>) 
         customerEmail={doc.billTo.email}
         customerPhone={doc.billTo.phone}
         total={total}
+        amount={doc.total}
         remaining={doc.credit?.remaining ?? '0.00'}
         currency={doc.currency}
         canSend={can(ctx, 'receipt:send')}

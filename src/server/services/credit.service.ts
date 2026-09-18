@@ -6,7 +6,10 @@ import { conflict, notFound } from "@/lib/errors";
 import { m, round2, toAmountString } from "@/server/domain/money";
 import { nextDocumentNumber } from "./inventory.service";
 import { writeAudit } from "./audit.service";
-import { enqueueIfConnected } from "@/server/integrations/quickbooks/sync/hooks";
+import {
+  enqueueIfConnected,
+  enqueueVoidIfConnected,
+} from "@/server/integrations/quickbooks/sync/hooks";
 import type {
   ApplyCreditInput,
   CreateAdjustmentCreditInput,
@@ -362,6 +365,16 @@ export async function unapplyCreditMemo(
       data: { balance: { increment: toAmountString(restored) } },
     });
 
+    // Unapplying is a different accounting operation from voiding the credit
+    // (docs/08 §17): the memo survives and becomes available again, and only
+    // the link to the invoice is reversed.
+    for (const application of memo.applications) {
+      await enqueueVoidIfConnected(tx, ctx.organizationId, {
+        entityType: "CreditMemoApplication",
+        localId: application.id,
+      });
+    }
+
     await writeAudit(tx, ctx, {
       action: "credit.unapplied",
       entityType: "CreditMemo",
@@ -565,6 +578,11 @@ export async function voidRefund(
         },
       });
     }
+
+    await enqueueVoidIfConnected(tx, ctx.organizationId, {
+      entityType: "Refund",
+      localId: refund.id,
+    });
 
     await writeAudit(tx, ctx, {
       action: "refund.voided",
@@ -780,6 +798,11 @@ export async function voidCreditMemo(
         voidedByUserId: ctx.userId,
         voidReason: reason,
       },
+    });
+
+    await enqueueVoidIfConnected(tx, ctx.organizationId, {
+      entityType: "CreditMemo",
+      localId: memo.id,
     });
 
     await writeAudit(tx, ctx, {

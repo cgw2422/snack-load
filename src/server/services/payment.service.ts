@@ -10,7 +10,10 @@ import {
   AllocationError,
 } from '@/server/domain/allocation'
 import { writeAudit } from './audit.service'
-import { enqueueIfConnected } from '@/server/integrations/quickbooks/sync/hooks'
+import {
+  enqueueIfConnected,
+  enqueueVoidIfConnected,
+} from '@/server/integrations/quickbooks/sync/hooks'
 import type { RecordPaymentInput } from '@/lib/schemas/sales'
 
 /**
@@ -234,6 +237,11 @@ export async function reversePayment(
         data: { balance: { increment: toAmountString(restored) } },
       })
     }
+
+    await enqueueVoidIfConnected(tx, ctx.organizationId, {
+      entityType: 'Payment',
+      localId: payment.id,
+    })
 
     await writeAudit(tx, ctx, {
       action: 'payment.reversed',

@@ -383,11 +383,11 @@ export function createFakeQuickBooks(
     updateCreditMemo: async (input, requestId) =>
       write<QboCreditMemo>('CreditMemo', 'updateCreditMemo', input, requestId),
     getCreditMemo: async (id) => readOne<QboCreditMemo>('CreditMemo', 'getCreditMemo', id),
-    voidCreditMemo: async (id, syncToken, requestId) =>
-      voidOne<QboCreditMemo>('CreditMemo', 'voidCreditMemo', id, syncToken, requestId),
 
     createRefundReceipt: async (input, requestId) =>
       write<QboRefundReceipt>('RefundReceipt', 'createRefundReceipt', input, requestId),
+    updateRefundReceipt: async (input, requestId) =>
+      write<QboRefundReceipt>('RefundReceipt', 'updateRefundReceipt', input, requestId),
     getRefundReceipt: async (id) => readOne<QboRefundReceipt>('RefundReceipt', 'getRefundReceipt', id),
 
     createJournalEntry: async (input, requestId) =>

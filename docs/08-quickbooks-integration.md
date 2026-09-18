@@ -417,6 +417,12 @@ have a good day is a suite nobody runs.
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
+| A void sits in Sync Issues | QuickBooks refuses to void a document other transactions depend on | Deal with the dependent transaction over there, then Retry. Nothing is deleted to force it through. |
+| A credit memo shows as $0 in QuickBooks | It was voided in SnackLoad | QuickBooks has no void for a credit memo, so it is zeroed and marked instead (§17) |
+| Two journal entries for one period | The batch was voided | The second is its reversal; they net to nothing (§17) |
+| A QuickBooks payment is smaller than the collection | Part of it was taken at the counter | The split-payment card shows the arithmetic (§19) |
+| Worker says "Not seen yet" | The scheduler has never called this deployment | Check the cron and `SYNC_WORKER_TOKEN` |
+| Worker says "Stalled" | Jobs were claimed and abandoned, or no sweep in hours | They are reclaimed automatically after five minutes; check the host's scheduler |
 | Everything says "Waiting" | the customer or an item has not mapped | look for the `Customer`/`Product` issue underneath; it is the real one |
 | "Choose the sales income account…" | no income account mapped | Account mapping, then save — blocked work re-queues itself |
 | `TAX_MISMATCH` on every document | Automated Sales Tax without a tax code mapped | set the tax code, or review the company's AST settings |
@@ -427,7 +433,225 @@ have a good day is a suite nobody runs.
 
 ---
 
-## 17. What Phase 8 deliberately does not do
+## 17. Voids and reversals
+
+SnackLoad never deletes financial history; it voids and reverses. The accounting
+copy follows — but **QuickBooks does not offer the same verb for every object**,
+and assuming it did was the first thing this section had to get right.
+
+### What QuickBooks actually allows
+
+Verified against Intuit's current documentation, September 2026:
+
+| Object | `operation=void`? | What we do |
+|---|---|---|
+| Invoice | **Yes** | Void. QuickBooks keeps the document and zeroes it. |
+| SalesReceipt | **Yes** | Void. |
+| Payment | **Yes** | Void — which is also what releases the invoice it settled. |
+| BillPayment | Yes | Not used; we never create one. |
+| CreditMemo | **No** — delete only | Reduce to zero in place and mark it. |
+| RefundReceipt | **No** — delete only | Reduce to zero in place and mark it. |
+| JournalEntry | **No** — delete only | Post a second, opposite entry. |
+
+Deleting is not a substitute for voiding. It removes the record, which is the
+one thing SnackLoad's own rules forbid, and it is not a decision to make on a
+distributor's books on our initiative. So the three objects with no void verb
+get a compensating action instead:
+
+- a **credit memo** or **refund receipt** keeps its number and its lines, with
+  every amount reduced to zero and `VOIDED IN SNACKLOAD: <reason>` appended to
+  its private note. Nothing is left on it to apply or to bank;
+- a **journal entry** gets its mirror image — debits and credits swapped, same
+  amounts. The period nets to nothing and both halves stay readable, which is
+  what an accountant expects to find rather than a journal that vanished.
+
+An update of this kind strips `TotalAmt`, `Balance`, `RemainingCredit` and
+`void` before sending: QuickBooks derives those, and echoing the ones we read
+back is how the first version of this zeroed every line and still reported the
+old total.
+
+### Where the work is queued
+
+At the **service boundary**, inside the transaction that commits the local
+reversal — never from a UI component. Every path is covered:
+
+| SnackLoad | Queues |
+|---|---|
+| `voidSale` | Sale VOID → Invoice or SalesReceipt void |
+| `reversePayment` | Payment VOID → Payment void |
+| `voidCreditMemo` | CreditMemo VOID → zero the credit memo |
+| `voidReturn` | CreditMemo VOID — the return itself has no QuickBooks object |
+| `voidRefund` | Refund VOID → zero the refund receipt |
+| `unapplyCreditMemo` | CreditMemoApplication VOID → void the linking payment |
+| `voidCogsBatch` | CogsJournalBatch VOID → reversing journal entry |
+
+### Unapplying is not voiding
+
+The distinction that matters most, and the one that would quietly put the two
+systems out of step:
+
+- **Unapply** reverses the *application*. In QuickBooks the application is the
+  zero-total Payment linking the credit memo to the invoice, so voiding that
+  payment releases both links: the invoice goes back up and the credit becomes
+  available again. The credit memo is untouched.
+- **Void** reverses the *credit memo*. The credit ceases to exist.
+
+SnackLoad refuses locally to void a credit that is applied or refunded, and says
+which to do first. By the time a void reaches QuickBooks the memo is
+unencumbered on both sides.
+
+### Dependent transactions
+
+QuickBooks refuses to void a document other transactions depend on. That
+refusal is classified as `VALIDATION` and becomes a sync issue with Intuit's own
+words on it. It is never worked around by deleting the dependents — the whole
+point of surfacing it is that a person decides.
+
+Where a reversal needs a mapping that does not exist, the job blocks
+(`BLOCKED_DEPENDENCY`) rather than failing repeatedly. Where the document never
+reached QuickBooks at all, there is simply nothing to reverse and the job
+records that.
+
+### Created, then voided, before the first sync
+
+A sale posted and voided before the worker reached it would otherwise be created
+and then need voiding, because the create job was queued first. The create
+syncers refuse to send anything that is reversed locally, so the void job finds
+nothing to do — which is the truth. The same guard stops a re-sync pushing a
+live payload over a voided document.
+
+### Idempotency
+
+A void carries the job's request id like any other operation, so a lost response
+followed by a retry lands on the same document. On top of that, every voider
+**reads the remote document first**:
+
+- already voided over there → the desired state is true, and the job reconciles
+  without sending anything (§10 of the brief);
+- materially different → `EXTERNAL_CONFLICT`, surfaced, never overwritten;
+- absent → nothing to reverse.
+
+Tested for Invoice, SalesReceipt, Payment, CreditMemo, RefundReceipt, credit
+unapplication and the COGS journal.
+
+---
+
+## 18. Split payments
+
+One SnackLoad collection is not always one QuickBooks number, and until this was
+written down it looked exactly like a discrepancy.
+
+A runner collects $300. $200 settles an open invoice. $100 was taken at the
+counter against a sale that posted as a sales receipt — and that receipt already
+records the money. QuickBooks correctly holds $200. Sending the other $100 as a
+payment too would be the same cash twice.
+
+`PaymentSyncAllocation` says so in rows. Every slice of the collection gets one:
+
+| Representation | Meaning |
+|---|---|
+| `INVOICE_PAYMENT` | A line on the QuickBooks Payment, linked to the invoice it settles. |
+| `SALES_RECEIPT` | Already banked by the receipt the money was taken against. No second object. |
+| `UNAPPLIED` | Carried on the QuickBooks Payment with no link — how QuickBooks holds credit on an account. |
+
+The QuickBooks payment total is `INVOICE_PAYMENT + UNAPPLIED`. The slices always
+sum to the SnackLoad total, and that is **asserted before anything is sent**: a
+mismatch is a bug in the syncer, not a QuickBooks problem, so it fails loudly
+rather than arriving later as an unexplained difference.
+
+The rows are a projection, rebuilt on every sync, so they cannot drift from what
+was actually sent. They are never written into `Payment.notes`, which stays what
+a person typed.
+
+Settings → Integrations → QuickBooks shows the arithmetic for any collection
+where the two totals differ:
+
+```
+Joe's Marathon · cash                                    $300.00 collected
+  $200.00  settles S-01182, as a line on the QuickBooks payment.
+  $100.00  was taken at the counter against S-01179, which posted as a sales
+           receipt and already records the money in QuickBooks.
+  ✓ $300.00 of $300.00 accounted for · $200.00 of it in QuickBooks
+```
+
+---
+
+## 19. The scheduled worker
+
+An integration that only syncs when somebody presses a button is not finished.
+
+**`POST /api/internal/quickbooks/sync`**, called on a schedule, runs `sweep()`,
+which calls the **same `drain()`** the button calls. There is deliberately no
+second queue, no second retry policy and no second place for the two to
+disagree; manual and scheduled syncing differ only in who called it.
+
+A cron-triggered internal route was chosen over a separate worker process
+because this deployment is a single Next.js service: a second process would need
+its own build, its own release and its own way of going stale, to run code that
+already exists here. `GET` is accepted as well as `POST`, because several hosted
+schedulers only issue GETs.
+
+### Authentication
+
+- A shared secret, `SYNC_WORKER_TOKEN`, presented as a bearer token and compared
+  in **constant time**.
+- Unset means the route refuses every request. It never runs unguarded.
+- No session, no tenant parameter, no input that selects work — there is nothing
+  here to turn into an authorization bypass.
+- It is not administration: it cannot connect, disconnect, remap or change
+  settings. The worst a leaked token buys is making the sync run.
+- The response is a summary. Customer names and amounts do not belong in a cron
+  provider's logs.
+
+### Concurrency
+
+Claiming is one statement:
+
+```sql
+UPDATE sync_job SET status = 'IN_PROGRESS', lease_owner = …, lease_expires_at = …
+ WHERE id = (SELECT id FROM sync_job WHERE … FOR UPDATE SKIP LOCKED LIMIT 1)
+```
+
+`SKIP LOCKED` means a second worker walks past a locked row to the next free
+job rather than waiting. Two workers never hold the same job, and a busy queue
+does not serialise itself. Tested with workers started simultaneously: one
+`createCustomer`, one `createItem`, one `createInvoice` per sale.
+
+The sweep visits organizations serially. Intuit's rate limit is per company, and
+the failure mode of parallelism here is a 429 storm rather than speed. One
+tenant with a broken connection does not stop the others — its error is recorded
+and the sweep moves on.
+
+### Stuck jobs
+
+A worker can be killed between claiming a job and finishing it. Without a lease
+that job stays `IN_PROGRESS` forever and nothing ever picks it up — the failure
+mode of every queue that trusts its workers to stay alive.
+
+So a claim stamps `leaseOwner` and `leaseExpiresAt` (five minutes). After that
+any worker may reclaim it, and `reclaimedCount` records that it happened.
+Reclaiming is safe precisely because the **request id stays with the job**: the
+second attempt lands on the document the first one created rather than beside
+it. Every terminal outcome — synced, failed, blocked — releases the lease.
+
+### Health
+
+Reported from measured state, never asserted (§19 of the brief):
+
+| Status | Means |
+|---|---|
+| `HEALTHY` | The sweep ran for this company within the last 30 minutes. |
+| `LATE` | It has not run in over 30 minutes. |
+| `STALLED` | Over three hours, or jobs were claimed and abandoned. |
+| `UNKNOWN` | It has never run for this company. |
+| `NOT_CONFIGURED` | No `SYNC_WORKER_TOKEN` on this server. |
+
+`UNKNOWN` and `NOT_CONFIGURED` are separate answers on purpose, and neither is
+dressed up as healthy.
+
+---
+
+## 20. What the integration deliberately does not do
 
 - No write-back from QuickBooks.
 - No inventory quantities, ever.
@@ -436,3 +660,8 @@ have a good day is a suite nobody runs.
   numbers its own invoices should leave `sendDocumentNumbers` off.
 - No multi-currency. Everything assumes the organization's own currency.
 - No `Return` object, because there should not be one.
+- **No sync for an adjustment credit with no product lines.** A pricing
+  correction or a goodwill credit typed by hand has nothing for QuickBooks to
+  credit against, so it is raised as a sync issue rather than guessed at. It is
+  visible, not silent — but it is a real gap, and closing it needs a nominated
+  QuickBooks item for non-merchandise credits.

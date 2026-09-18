@@ -2,6 +2,9 @@ import { notFound } from '@/lib/errors'
 import { m, toAmountString } from '@/server/domain/money'
 import {
   buildCogsJournal,
+  buildReversingJournal,
+  buildVoidedCreditMemo,
+  buildVoidedRefundReceipt,
   buildCreditApplication,
   buildCreditMemo,
   buildCustomer,
@@ -12,7 +15,14 @@ import {
   buildSalesReceipt,
   type LineSource,
 } from '../documents'
-import { beginAttempt, recordSuccess, sourceHash, type EntityType } from '../mapping'
+import {
+  beginAttempt,
+  externalIdFor,
+  findMapping,
+  recordSuccess,
+  sourceHash,
+  type EntityType,
+} from '../mapping'
 import { missingMappings } from '../settings'
 import { QuickBooksError, type Ref } from '../types'
 import { DependencyNotReady, requireRef, type SyncContext } from './context'
@@ -50,6 +60,25 @@ export type Syncer = (ctx: SyncContext, localId: string, requestId: string) => P
 /** A derived request id, for a syncer that has to make two calls. Deterministic,
  *  so a retry sends the same two ids and lands on the same two documents. */
 const derive = (requestId: string, suffix: string) => `${requestId}-${suffix}`
+
+/**
+ * A create or update never sends a document that has been reversed locally
+ * (docs/08 §17). Two things depend on this:
+ *
+ *  - It closes the only race between creating and reversing. A sale posted and
+ *    voided before the worker reached it would otherwise be created — and then
+ *    need voiding — because the create job was queued first. Refusing here
+ *    means the void job finds nothing to reverse, which is the truth.
+ *  - It stops a re-sync pushing a live payload over a document that is voided.
+ *    Reversing it is the void job's business, and only the void job's.
+ */
+const SKIPPED_AS_VOIDED: SyncerResult = {
+  externalId: 'NOT_APPLICABLE',
+  syncToken: null,
+  sourceHash: 'reversed-locally',
+  reconciliation: null,
+  taxProvenance: 'SNAPSHOT',
+}
 
 function assertSalesMappings(ctx: SyncContext): void {
   const missing = missingMappings(ctx.settings, 'sales')
@@ -186,6 +215,7 @@ export const syncSale: Syncer = async (ctx, localId, requestId) => {
     },
   })
   if (!sale) throw notFound('That sale')
+  if (sale.status === 'VOIDED') return SKIPPED_AS_VOIDED
 
   const customer = await requireRef(
     ctx,
@@ -277,23 +307,41 @@ export const syncSale: Syncer = async (ctx, localId, requestId) => {
 
 // ─── payment ─────────────────────────────────────────────────────────────────
 
+/**
+ * A payment, and the arithmetic that explains it (docs/08 §18).
+ *
+ * One SnackLoad collection does not always become one QuickBooks number, and
+ * until this was written down it looked like a discrepancy. Every slice of the
+ * payment gets a row saying where it lives:
+ *
+ *  - money against an **invoice** becomes a line on the QuickBooks Payment;
+ *  - money taken at the counter against a **sales receipt** is already banked by
+ *    that receipt — sending it again would be a second cash row for money that
+ *    moved once;
+ *  - money **not allocated** to anything rides on the QuickBooks Payment with no
+ *    link, which is how QuickBooks holds credit on a customer's account.
+ *
+ * The three always add up to the SnackLoad total, and that is asserted before
+ * anything is sent rather than hoped for afterwards.
+ */
 export const syncPayment: Syncer = async (ctx, localId, requestId) => {
   const payment = await ctx.prisma.payment.findFirst({
     where: { id: localId },
     select: {
       id: true, customerId: true, amount: true, method: true, receivedAt: true,
-      checkNumber: true, referenceNumber: true, status: true,
+      checkNumber: true, referenceNumber: true, status: true, unappliedAmount: true,
       customer: { select: { name: true } },
       allocations: {
         select: {
           amount: true,
           saleId: true,
-          sale: { select: { saleNumber: true, documentType: true } },
+          sale: { select: { saleNumber: true, documentType: true, status: true } },
         },
       },
     },
   })
   if (!payment) throw notFound('That payment')
+  if (payment.status !== 'POSTED') return SKIPPED_AS_VOIDED
 
   const customer = await requireRef(
     ctx,
@@ -302,48 +350,94 @@ export const syncPayment: Syncer = async (ctx, localId, requestId) => {
     () => `${payment.customer.name} is not in QuickBooks yet.`,
   )
 
+  const components: PaymentComponent[] = []
+  const allocations: {
+    invoiceExternalId: string
+    amount: string
+    saleNumber: string
+    saleId: string
+  }[] = []
+
+  for (const allocation of payment.allocations) {
+    const amount = m(allocation.amount)
+    // A voided sale zeroes its allocation and the money moves to unapplied;
+    // there is nothing left here to represent.
+    if (!amount.greaterThan(0) || !allocation.sale || !allocation.saleId) continue
+
+    if (allocation.sale.documentType === 'SALES_RECEIPT') {
+      const receipt = await externalIdFor(ctx.prisma, 'Sale', allocation.saleId)
+      components.push({
+        saleId: allocation.saleId,
+        amount: toAmountString(amount),
+        representation: 'SALES_RECEIPT',
+        externalId: receipt,
+        explanation:
+          `${toAmountString(amount)} was taken at the counter against ${allocation.sale.saleNumber}, ` +
+          'which posted as a sales receipt and already records the money in QuickBooks. ' +
+          'No separate QuickBooks payment is created for it.',
+      })
+      continue
+    }
+
+    const invoice = await requireRef(
+      ctx,
+      'Sale',
+      allocation.saleId,
+      () => `${allocation.sale!.saleNumber} is not in QuickBooks yet.`,
+    )
+    allocations.push({
+      invoiceExternalId: invoice.value,
+      amount: toAmountString(amount),
+      saleNumber: allocation.sale.saleNumber,
+      saleId: allocation.saleId,
+    })
+    components.push({
+      saleId: allocation.saleId,
+      amount: toAmountString(amount),
+      representation: 'INVOICE_PAYMENT',
+      externalId: null,
+      explanation: `${toAmountString(amount)} settles ${allocation.sale.saleNumber}, as a line on the QuickBooks payment.`,
+    })
+  }
+
+  const unapplied = m(payment.unappliedAmount)
+  if (unapplied.greaterThan(0)) {
+    components.push({
+      saleId: null,
+      amount: toAmountString(unapplied),
+      representation: 'UNAPPLIED',
+      externalId: null,
+      explanation:
+        `${toAmountString(unapplied)} was not applied to any invoice. It rides on the QuickBooks ` +
+        'payment with no link, which is how QuickBooks holds credit on a customer account.',
+    })
+  }
+
+  assertComponentsBalance(payment.amount.toString(), components)
+
   /**
-   * A payment taken at the counter against a sales receipt has no QuickBooks
-   * Payment of its own — the receipt already records the money (§7). Syncing
-   * one anyway would credit the customer twice.
+   * Nothing for QuickBooks to hold: every penny is already recorded by the
+   * sales receipts it was taken against. Creating a payment as well would
+   * double the cash.
    */
-  const invoiceAllocations = payment.allocations.filter(
-    (allocation) => allocation.sale?.documentType === 'INVOICE',
-  )
-  if (invoiceAllocations.length === 0) {
+  const sendable = components.filter((component) => component.representation !== 'SALES_RECEIPT')
+  if (sendable.length === 0) {
+    await writeComponents(ctx, payment.id, components)
     return {
       externalId: 'NOT_APPLICABLE',
       syncToken: null,
-      sourceHash: sourceHash({ skipped: 'salesReceipt', paymentId: localId }),
+      sourceHash: sourceHash({ skipped: 'salesReceiptOnly', components }),
       reconciliation: null,
       taxProvenance: 'SNAPSHOT',
     }
   }
 
-  const allocations = []
-  for (const allocation of invoiceAllocations) {
-    const invoice = await requireRef(
-      ctx,
-      'Sale',
-      allocation.saleId!,
-      () => `${allocation.sale!.saleNumber} is not in QuickBooks yet.`,
-    )
-    allocations.push({
-      invoiceExternalId: invoice.value,
-      amount: toAmountString(allocation.amount),
-      saleNumber: allocation.sale!.saleNumber,
-    })
-  }
-
-  const applied = allocations.reduce((total, entry) => total.plus(m(entry.amount)), m(0))
+  const total = sendable.reduce((sum, component) => sum.plus(m(component.amount)), m(0))
 
   const built = buildPayment(
     {
       receivedAt: payment.receivedAt,
-      // What reaches QuickBooks is what was applied to invoices. Money left
-      // unapplied on the account is not a payment against anything, and
-      // sending it as one would overstate the invoice's settlement.
-      amount: toAmountString(applied),
+      amount: toAmountString(total),
       method: payment.method,
       checkNumber: payment.checkNumber,
       referenceNumber: payment.referenceNumber,
@@ -357,6 +451,7 @@ export const syncPayment: Syncer = async (ctx, localId, requestId) => {
   const hash = sourceHash(built.payload)
 
   if (mapping.externalId && mapping.sourceHash === hash) {
+    await writeComponents(ctx, payment.id, components, mapping.externalId)
     return {
       externalId: mapping.externalId,
       syncToken: mapping.externalSyncToken,
@@ -375,17 +470,75 @@ export const syncPayment: Syncer = async (ctx, localId, requestId) => {
     ? await ctx.client.updatePayment(payload, requestId)
     : await ctx.client.createPayment(payload, requestId)
 
+  await writeComponents(ctx, payment.id, components, result.Id ?? null)
+
   return {
     externalId: result.Id!,
     syncToken: result.SyncToken ?? null,
     sourceHash: hash,
     reconciliation: reconcileTotals({
-      document: `Payment for ${allocations.map((a) => a.saleNumber).join(', ')}`,
+      // The expected total is what QuickBooks is meant to hold, not the whole
+      // SnackLoad collection — the difference is the sales-receipt slice, and
+      // the components above are what say so.
+      document: `Payment from ${payment.customer.name}`,
       expectedTotal: built.expected.total,
       actualTotal: result.TotalAmt,
     }),
     taxProvenance: 'SNAPSHOT',
   }
+}
+
+type PaymentComponent = {
+  saleId: string | null
+  amount: string
+  representation: 'INVOICE_PAYMENT' | 'SALES_RECEIPT' | 'UNAPPLIED'
+  externalId: string | null
+  explanation: string
+}
+
+/**
+ * The invariant the whole model rests on: the slices are the payment.
+ *
+ * A failure here is a bug in this file, not a QuickBooks problem, so it is
+ * raised before anything is sent rather than discovered as a mismatch after.
+ */
+function assertComponentsBalance(paymentAmount: string, components: PaymentComponent[]): void {
+  const accounted = components.reduce((sum, component) => sum.plus(m(component.amount)), m(0))
+  if (!m(paymentAmount).equals(accounted)) {
+    throw new QuickBooksError(
+      'VALIDATION',
+      `This payment does not add up: ${toAmountString(m(paymentAmount))} collected, ` +
+        `${toAmountString(accounted)} accounted for across invoices, sales receipts and unapplied credit.`,
+    )
+  }
+}
+
+/** Rebuilt every sync, so the projection cannot drift from what was sent. */
+async function writeComponents(
+  ctx: SyncContext,
+  paymentId: string,
+  components: PaymentComponent[],
+  paymentExternalId?: string | null,
+): Promise<void> {
+  await ctx.prisma.$transaction(async (tx) => {
+    await tx.paymentSyncAllocation.deleteMany({ where: { paymentId } })
+    for (const component of components) {
+      await tx.paymentSyncAllocation.create({
+        data: {
+          organizationId: ctx.organizationId,
+          paymentId,
+          saleId: component.saleId,
+          amount: component.amount,
+          representation: component.representation,
+          externalId:
+            component.representation === 'SALES_RECEIPT'
+              ? component.externalId
+              : (paymentExternalId ?? null),
+          explanation: component.explanation,
+        },
+      })
+    }
+  })
 }
 
 // ─── credit memo ─────────────────────────────────────────────────────────────
@@ -438,6 +591,7 @@ function creditLineSources(memo: Awaited<ReturnType<typeof creditLines>>): LineS
 export const syncCreditMemo: Syncer = async (ctx, localId, requestId) => {
   assertSalesMappings(ctx)
   const memo = await creditLines(ctx, localId)
+  if (memo.status === 'VOIDED') return SKIPPED_AS_VOIDED
 
   const lines = creditLineSources(memo)
   if (lines.length === 0) {
@@ -524,6 +678,7 @@ export const syncCreditApplication: Syncer = async (ctx, localId, requestId) => 
     },
   })
   if (!application) throw notFound('That credit application')
+  if (application.status !== 'APPLIED') return SKIPPED_AS_VOIDED
 
   const customer = await requireRef(
     ctx,
@@ -609,6 +764,7 @@ export const syncRefund: Syncer = async (ctx, localId, requestId) => {
     },
   })
   if (!refund) throw notFound('That refund')
+  if (refund.status !== 'POSTED') return SKIPPED_AS_VOIDED
 
   const memo = await creditLines(ctx, refund.creditMemoId)
   const lines = creditLineSources(memo)
@@ -786,3 +942,350 @@ export const SYNCERS: Record<EntityType, Syncer> = {
 }
 
 export { DependencyNotReady, recordSuccess }
+
+// ─── voids and reversals ─────────────────────────────────────────────────────
+
+/**
+ * Reversing a document that QuickBooks already holds (docs/08 §17).
+ *
+ * Three properties every voider below shares, because each one is a way this
+ * can go wrong:
+ *
+ *  1. **Nothing there is nothing to do.** A document voided before it ever
+ *     reached QuickBooks has no mapping, and the void is a no-op — not a
+ *     failure, and not something to block on. The create syncers refuse to send
+ *     a locally-voided document, so there is no race where the create lands
+ *     afterwards.
+ *  2. **Already reversed is success.** The remote document is read first. If
+ *     somebody voided it in QuickBooks before we got there, the desired state is
+ *     already true and the job reconciles rather than fighting over it (§10).
+ *  3. **Materially different is a conflict, not an overwrite.** If their copy
+ *     has been edited into something else, that is `EXTERNAL_CONFLICT` for a
+ *     person to look at.
+ */
+
+/** What a voider found on the QuickBooks side before acting. */
+type RemoteState<T> =
+  | { kind: 'ABSENT' }
+  | { kind: 'ALREADY_REVERSED'; externalId: string; syncToken: string | null }
+  | { kind: 'LIVE'; document: T; externalId: string; syncToken: string }
+
+const NOTHING_TO_DO: SyncerResult = {
+  externalId: 'NOT_APPLICABLE',
+  syncToken: null,
+  sourceHash: 'void:nothing-in-quickbooks',
+  reconciliation: null,
+  taxProvenance: 'SNAPSHOT',
+}
+
+/** A voided QuickBooks document carries `void`, or has simply been zeroed. */
+function looksReversed(document: { void?: boolean; TotalAmt?: number } | null): boolean {
+  if (!document) return false
+  return document.void === true || Number(document.TotalAmt ?? 0) === 0
+}
+
+async function remoteFor<T extends { Id?: string; SyncToken?: string; void?: boolean; TotalAmt?: number }>(
+  ctx: SyncContext,
+  entityType: EntityType,
+  localId: string,
+  fetch: (id: string) => Promise<T | null>,
+): Promise<RemoteState<T>> {
+  const mapping = await findMapping(ctx.prisma, entityType, localId)
+  if (!mapping?.externalId) return { kind: 'ABSENT' }
+
+  const document = await fetch(mapping.externalId)
+  if (!document) {
+    // They deleted it themselves. The outcome we wanted is the outcome we have.
+    return { kind: 'ALREADY_REVERSED', externalId: mapping.externalId, syncToken: null }
+  }
+  if (looksReversed(document)) {
+    return {
+      kind: 'ALREADY_REVERSED',
+      externalId: mapping.externalId,
+      syncToken: document.SyncToken ?? mapping.externalSyncToken,
+    }
+  }
+
+  return {
+    kind: 'LIVE',
+    document,
+    externalId: mapping.externalId,
+    syncToken: document.SyncToken ?? mapping.externalSyncToken ?? '0',
+  }
+}
+
+const reversed = (externalId: string, syncToken: string | null): SyncerResult => ({
+  externalId,
+  syncToken,
+  sourceHash: 'void:reversed',
+  reconciliation: null,
+  taxProvenance: 'SNAPSHOT',
+})
+
+/** The reason a person typed, for the note QuickBooks keeps. */
+async function voidReasonFor(ctx: SyncContext, entityType: EntityType, localId: string): Promise<string> {
+  switch (entityType) {
+    case 'Sale': {
+      const row = await ctx.prisma.sale.findFirst({ where: { id: localId }, select: { voidReason: true } })
+      return row?.voidReason ?? 'Voided'
+    }
+    case 'CreditMemo': {
+      const row = await ctx.prisma.creditMemo.findFirst({ where: { id: localId }, select: { voidReason: true } })
+      return row?.voidReason ?? 'Voided'
+    }
+    case 'Refund': {
+      const row = await ctx.prisma.refund.findFirst({ where: { id: localId }, select: { voidReason: true } })
+      return row?.voidReason ?? 'Voided'
+    }
+    case 'Payment': {
+      const row = await ctx.prisma.payment.findFirst({ where: { id: localId }, select: { notes: true } })
+      return row?.notes ?? 'Reversed'
+    }
+    default:
+      return 'Voided'
+  }
+}
+
+/**
+ * A sale. Invoice and sales receipt both support `operation=void`, so this is
+ * the straightforward case: QuickBooks keeps the document, zeroes it and marks
+ * it voided, which is exactly what SnackLoad did locally.
+ *
+ * QuickBooks refuses to void an invoice that still has payments or credits
+ * linked to it. That refusal arrives as a validation error and becomes an issue
+ * a person can act on — never a workaround that deletes the dependent
+ * documents to get the void through.
+ */
+export const voidSaleSyncer: Syncer = async (ctx, localId, requestId) => {
+  const sale = await ctx.prisma.sale.findFirst({
+    where: { id: localId },
+    select: { saleNumber: true, documentType: true, status: true },
+  })
+  if (!sale) throw notFound('That sale')
+
+  const isReceipt = sale.documentType === 'SALES_RECEIPT'
+  const state = isReceipt
+    ? await remoteFor(ctx, 'Sale', localId, (id) => ctx.client.getSalesReceipt(id))
+    : await remoteFor(ctx, 'Sale', localId, (id) => ctx.client.getInvoice(id))
+
+  if (state.kind === 'ABSENT') return NOTHING_TO_DO
+  if (state.kind === 'ALREADY_REVERSED') return reversed(state.externalId, state.syncToken)
+
+  const result = isReceipt
+    ? await ctx.client.voidSalesReceipt(state.externalId, state.syncToken, requestId)
+    : await ctx.client.voidInvoice(state.externalId, state.syncToken, requestId)
+
+  return {
+    externalId: result.Id ?? state.externalId,
+    syncToken: result.SyncToken ?? null,
+    sourceHash: 'void:reversed',
+    reconciliation: reconcileTotals({
+      document: `${sale.saleNumber} (voided)`,
+      expectedTotal: '0.00',
+      actualTotal: result.TotalAmt,
+    }),
+    taxProvenance: 'SNAPSHOT',
+  }
+}
+
+/**
+ * A payment reversal. `Payment` supports void, and voiding it is what restores
+ * the invoice's open balance on the QuickBooks side — which is why this is a
+ * void rather than a second, negative payment. A compensating pair would leave
+ * two cash rows on the customer's account for money that only moved once.
+ */
+export const voidPaymentSyncer: Syncer = async (ctx, localId, requestId) => {
+  const state = await remoteFor(ctx, 'Payment', localId, (id) => ctx.client.getPayment(id))
+  if (state.kind === 'ABSENT') return NOTHING_TO_DO
+  if (state.kind === 'ALREADY_REVERSED') return reversed(state.externalId, state.syncToken)
+
+  const result = await ctx.client.voidPayment(state.externalId, state.syncToken, requestId)
+  return {
+    externalId: result.Id ?? state.externalId,
+    syncToken: result.SyncToken ?? null,
+    sourceHash: 'void:reversed',
+    reconciliation: reconcileTotals({
+      document: 'Reversed payment',
+      expectedTotal: '0.00',
+      actualTotal: result.TotalAmt,
+    }),
+    taxProvenance: 'SNAPSHOT',
+  }
+}
+
+/**
+ * Unapplying a credit — **not** the same operation as voiding the credit memo,
+ * and confusing the two is how an invoice balance ends up different in the two
+ * systems.
+ *
+ * The application *is* the zero-total Payment that links the credit memo to the
+ * invoice. Voiding that Payment releases both links: the invoice goes back up by
+ * the applied amount and the credit becomes available again. The credit memo
+ * itself is untouched, which is the point.
+ */
+export const unapplyCreditSyncer: Syncer = async (ctx, localId, requestId) => {
+  const state = await remoteFor(ctx, 'CreditMemoApplication', localId, (id) =>
+    ctx.client.getPayment(id),
+  )
+  if (state.kind === 'ABSENT') return NOTHING_TO_DO
+
+  // A linking payment is zero-total to begin with, so "already zero" says
+  // nothing. Read the links instead: gone means already unapplied.
+  if (state.kind === 'ALREADY_REVERSED') {
+    const document = await ctx.client.getPayment(state.externalId)
+    const stillLinked = (document?.Line ?? []).some((line) => line.LinkedTxn.length > 0)
+    if (!document || !stillLinked) return reversed(state.externalId, state.syncToken)
+
+    const result = await ctx.client.voidPayment(
+      state.externalId,
+      document.SyncToken ?? state.syncToken ?? '0',
+      requestId,
+    )
+    return reversed(result.Id ?? state.externalId, result.SyncToken ?? null)
+  }
+
+  const result = await ctx.client.voidPayment(state.externalId, state.syncToken, requestId)
+  return reversed(result.Id ?? state.externalId, result.SyncToken ?? null)
+}
+
+/**
+ * Voiding a credit memo. QuickBooks has no void verb here, so the memo is
+ * reduced to zero in place and marked, keeping its number and its history with
+ * nothing left on it to apply.
+ *
+ * SnackLoad refuses locally to void a credit that is applied or refunded, so by
+ * the time this runs the memo is unencumbered on both sides. If QuickBooks
+ * still rejects the update because something over there depends on it, that
+ * becomes an issue rather than a cascade of deletions.
+ */
+export const voidCreditMemoSyncer: Syncer = async (ctx, localId, requestId) => {
+  const state = await remoteFor(ctx, 'CreditMemo', localId, (id) => ctx.client.getCreditMemo(id))
+  if (state.kind === 'ABSENT') return NOTHING_TO_DO
+  if (state.kind === 'ALREADY_REVERSED') return reversed(state.externalId, state.syncToken)
+
+  const memo = await ctx.prisma.creditMemo.findFirst({
+    where: { id: localId },
+    select: { number: true },
+  })
+  const built = buildVoidedCreditMemo(
+    { ...state.document, Id: state.externalId, SyncToken: state.syncToken },
+    await voidReasonFor(ctx, 'CreditMemo', localId),
+  )
+  const result = await ctx.client.updateCreditMemo(built.payload, requestId)
+
+  return {
+    externalId: result.Id ?? state.externalId,
+    syncToken: result.SyncToken ?? null,
+    sourceHash: 'void:reversed',
+    reconciliation: reconcileTotals({
+      document: `${memo?.number ?? 'Credit memo'} (voided)`,
+      expectedTotal: '0.00',
+      actualTotal: result.TotalAmt,
+      expectedTax: '0.00',
+      actualTax: result.TxnTaxDetail?.TotalTax,
+    }),
+    taxProvenance: 'SNAPSHOT',
+  }
+}
+
+/**
+ * Voiding a refund. Same reasoning as the credit memo: `RefundReceipt` has no
+ * void verb, so it is zeroed and marked. The zero-total Payment that linked it
+ * to the credit memo is voided first, so the credit becomes available again
+ * rather than staying attached to a refund worth nothing.
+ */
+export const voidRefundSyncer: Syncer = async (ctx, localId, requestId) => {
+  const state = await remoteFor(ctx, 'Refund', localId, (id) => ctx.client.getRefundReceipt(id))
+  if (state.kind === 'ABSENT') return NOTHING_TO_DO
+  if (state.kind === 'ALREADY_REVERSED') return reversed(state.externalId, state.syncToken)
+
+  const refund = await ctx.prisma.refund.findFirst({
+    where: { id: localId },
+    select: { refundNumber: true },
+  })
+  const built = buildVoidedRefundReceipt(
+    { ...state.document, Id: state.externalId, SyncToken: state.syncToken },
+    await voidReasonFor(ctx, 'Refund', localId),
+  )
+  const result = await ctx.client.updateRefundReceipt(built.payload, requestId)
+
+  return {
+    externalId: result.Id ?? state.externalId,
+    syncToken: result.SyncToken ?? null,
+    sourceHash: 'void:reversed',
+    reconciliation: reconcileTotals({
+      document: `${refund?.refundNumber ?? 'Refund'} (voided)`,
+      expectedTotal: '0.00',
+      actualTotal: result.TotalAmt,
+      expectedTax: '0.00',
+      actualTax: result.TxnTaxDetail?.TotalTax,
+    }),
+    taxProvenance: 'SNAPSHOT',
+  }
+}
+
+/**
+ * Voiding a COGS journal. `JournalEntry` has no void verb either, and deleting
+ * a posted journal is not something to do to a closed period. The answer is the
+ * textbook one: a second, opposite entry, so the period nets to nothing and
+ * both halves stay readable.
+ *
+ * The reversal is its own QuickBooks document, so the mapping keeps pointing at
+ * the original — that is the document the batch *is*, and the reversal is
+ * recorded alongside it in the job's log.
+ */
+export const voidCogsBatchSyncer: Syncer = async (ctx, localId, requestId) => {
+  const mapping = await findMapping(ctx.prisma, 'CogsJournalBatch', localId)
+  if (!mapping?.externalId) return NOTHING_TO_DO
+
+  const batch = await ctx.prisma.cogsJournalBatch.findFirst({ where: { id: localId } })
+  if (!batch) throw notFound('That COGS batch')
+
+  const missing = missingMappings(ctx.settings, 'cogs')
+  if (missing.length > 0) {
+    throw new QuickBooksError(
+      'MAPPING',
+      `Choose the ${missing.map((entry) => entry.label.toLowerCase()).join(' and ')} before a COGS journal can be reversed.`,
+    )
+  }
+
+  const built = buildReversingJournal(
+    {
+      periodStart: batch.periodStart,
+      periodEnd: batch.periodEnd,
+      totalCogs: toAmountString(batch.totalCogs),
+      batchId: batch.id,
+    },
+    ctx.settings,
+    'Voided in SnackLoad',
+  )
+
+  const result = await ctx.client.createJournalEntry(built.payload, requestId)
+
+  return {
+    // Still the original. The reversal is a second document, not a replacement.
+    externalId: mapping.externalId,
+    syncToken: mapping.externalSyncToken,
+    sourceHash: `void:reversed:${result.Id}`,
+    reconciliation: reconcileTotals({
+      document: `COGS reversal ${built.payload.TxnDate}`,
+      expectedTotal: built.expected.total,
+      actualTotal: result.TotalAmt ?? Number(built.expected.total),
+    }),
+    taxProvenance: 'SNAPSHOT',
+  }
+}
+
+/**
+ * A return's void reaches QuickBooks through its credit memo, because that is
+ * where its money lives (docs/07 §5). The goods document has no QuickBooks
+ * object to reverse.
+ */
+export const VOIDERS: Partial<Record<EntityType, Syncer>> = {
+  Sale: voidSaleSyncer,
+  Payment: voidPaymentSyncer,
+  CreditMemo: voidCreditMemoSyncer,
+  CreditMemoApplication: unapplyCreditSyncer,
+  Refund: voidRefundSyncer,
+  CogsJournalBatch: voidCogsBatchSyncer,
+}

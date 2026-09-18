@@ -6,7 +6,7 @@ import { recordFailure, type EntityType } from '../mapping'
 import { QuickBooksError, type QuickBooksClient } from '../types'
 import { loadSettings, type SyncContext } from './context'
 import { claimNext, enqueue, finish, releaseDependents, type Operation } from './queue'
-import { DependencyNotReady, recordSuccess, SYNCERS } from './syncers'
+import { DependencyNotReady, recordSuccess, SYNCERS, VOIDERS } from './syncers'
 
 /**
  * The worker (docs/08 §4).
@@ -36,6 +36,11 @@ export type DrainOptions = {
   limit?: number
   /** Injectable so tests can drive time rather than wait for it. */
   now?: () => Date
+  /**
+   * Who is holding the lease. Two workers running at once each stamp their own
+   * token, which is what makes "who had this when it died" answerable.
+   */
+  leaseOwner?: string
 }
 
 const CATEGORY: Record<string, SyncErrorCategory> = {
@@ -93,7 +98,7 @@ export async function drain(options: DrainOptions): Promise<DrainResult> {
   })
 
   while (result.processed < limit) {
-    const claimed = await claimNext(prisma, organizationId, now())
+    const claimed = await claimNext(prisma, organizationId, now(), options.leaseOwner ?? 'inline')
     if (!claimed) {
       result.stoppedBecause = 'EMPTY'
       break
@@ -142,12 +147,21 @@ async function runOne(ctx: SyncContext, jobId: string, now: () => Date): Promise
     },
   })
 
-  const syncer = SYNCERS[job.entityType as EntityType]
+  /**
+   * A void is a different operation on the same document, not a different
+   * document (docs/08 §17). `VOID` reverses what QuickBooks holds; everything
+   * else creates or updates it.
+   */
+  const entityType = job.entityType as EntityType
+  const syncer = job.operation === 'VOID' ? VOIDERS[entityType] : SYNCERS[entityType]
   if (!syncer) {
     await finish(ctx.prisma, job.id, job.attempts, {
       status: 'FAILED',
       category: 'VALIDATION',
-      message: `Nothing in this build knows how to sync a ${job.entityType}.`,
+      message:
+        job.operation === 'VOID'
+          ? `A ${job.entityType} has no QuickBooks document to reverse.`
+          : `Nothing in this build knows how to sync a ${job.entityType}.`,
     })
     return 'FAILED'
   }
@@ -194,8 +208,10 @@ async function runOne(ctx: SyncContext, jobId: string, now: () => Date): Promise
       job.attempts,
       'info',
       result.externalId === 'NOT_APPLICABLE'
-        ? 'Nothing to send: a counter payment is already recorded by its sales receipt.'
-        : `Synced as QuickBooks ${job.entityType} ${result.externalId}.` +
+        ? job.operation === 'VOID'
+          ? 'Nothing to reverse: this document never reached QuickBooks.'
+          : 'Nothing to send: a counter payment is already recorded by its sales receipt.'
+        : `${job.operation === 'VOID' ? 'Reversed' : 'Synced as'} QuickBooks ${job.entityType} ${result.externalId}.` +
             (result.taxProvenance === 'LEGACY'
               ? ' Tax detail was not recorded on this document; amounts were sent as posted.'
               : ''),
@@ -237,15 +253,7 @@ async function handleFailure(
     return 'BLOCKED_DEPENDENCY'
   }
 
-  const qb =
-    error instanceof QuickBooksError
-      ? error
-      : new QuickBooksError(
-          'VALIDATION',
-          error instanceof AppError || error instanceof Error
-            ? error.message
-            : 'Something went wrong preparing this document for QuickBooks.',
-        )
+  const qb = error instanceof QuickBooksError ? error : classifyUnexpected(error)
 
   await mapFailure(ctx, job, qb.message, qb.retryable)
   await log(ctx, job.id, job.attempts, 'error', qb.message, {
@@ -263,6 +271,41 @@ async function handleFailure(
   })
 
   return qb.category === 'AUTHORIZATION' ? 'AUTHORIZATION_LOST' : 'FAILED'
+}
+
+/**
+ * Anything that is not a QuickBooks error is ours, and an operator must not be
+ * shown the inside of it.
+ *
+ * A Prisma failure carries a stack, a compiled chunk path and the query that
+ * broke — none of which belongs on a settings screen, and all of which an
+ * operator can do nothing with. The detail goes to the server log; the issue
+ * gets a sentence somebody can act on.
+ */
+export function classifyUnexpected(error: unknown): QuickBooksError {
+  // A domain error is already a sentence written for a person.
+  if (error instanceof AppError) {
+    return new QuickBooksError('VALIDATION', error.message)
+  }
+
+  if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+    // QuickBooks handed back an id that another SnackLoad document already
+    // claims. In practice that means the connection was repointed at a
+    // different company, or mappings are left over from one.
+    return new QuickBooksError(
+      'MAPPING',
+      'QuickBooks returned an id that is already mapped to another SnackLoad document. ' +
+        'This usually means the connection was moved to a different QuickBooks company. ' +
+        'Reconnect to the original company, or clear the old mappings before syncing again.',
+      { code: error.code },
+    )
+  }
+
+  console.error('[quickbooks] unexpected sync failure', error)
+  return new QuickBooksError(
+    'VALIDATION',
+    'Something went wrong preparing this document for QuickBooks. The details are in the server log.',
+  )
 }
 
 async function mapFailure(

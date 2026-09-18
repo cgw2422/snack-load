@@ -29,7 +29,7 @@ export const TENANT_MODELS = [
   'RouteTemplate', 'CustomerSchedule', 'Route', 'RouteStop',
   'RouteAssignmentHistory', 'RouteCloseout', 'RouteCloseoutItem',
   'Sale', 'SaleItem', 'Receipt', 'ReceiptDelivery', 'ReceiptShareLink', 'Signature',
-  'Payment', 'PaymentAllocation',
+  'Payment', 'PaymentAllocation', 'PaymentSyncAllocation',
   'Return', 'ReturnItem',
   'CreditMemo', 'CreditMemoItem', 'CreditMemoApplication', 'Refund',
   'DocumentSequence',

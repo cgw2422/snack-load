@@ -19,7 +19,10 @@ import {
 } from '@/server/domain/returnMath'
 import { nextDocumentNumber, postInventoryTransaction } from './inventory.service'
 import { writeAudit } from './audit.service'
-import { enqueueIfConnected } from '@/server/integrations/quickbooks/sync/hooks'
+import {
+  enqueueIfConnected,
+  enqueueVoidIfConnected,
+} from '@/server/integrations/quickbooks/sync/hooks'
 import { applyCreditMemo, issueRefund, snapshotParties } from './credit.service'
 import { pluralize } from '@/server/domain/uom'
 import type { CreateReturnInput } from '@/lib/schemas/returns'
@@ -660,6 +663,15 @@ export async function voidReturn(
         voidReason: reason,
       },
     })
+
+    // The goods document has no QuickBooks object. Its money is the credit
+    // memo, so that is what gets reversed over there.
+    if (memo) {
+      await enqueueVoidIfConnected(tx, ctx.organizationId, {
+        entityType: 'CreditMemo',
+        localId: memo.id,
+      })
+    }
 
     await writeAudit(tx, ctx, {
       action: 'return.voided',

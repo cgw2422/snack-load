@@ -208,9 +208,13 @@ export function createQuickBooksClient(options: ClientOptions): QuickBooksClient
     }
 
   /**
-   * Voiding. QuickBooks keeps the document and zeroes it, which is the closest
-   * thing to SnackLoad's own rule that financial records are never deleted.
-   * Payments and sales receipts void through the same `operation=void` verb.
+   * Voiding: `operation=void`. QuickBooks keeps the document and zeroes it,
+   * which is the closest thing to SnackLoad's own rule that financial records
+   * are never deleted.
+   *
+   * Available for **Invoice, SalesReceipt, Payment and BillPayment only**.
+   * Credit memos, refund receipts and journal entries have no void verb; the
+   * syncers reverse those with a compensating action (docs/08 §17).
    */
   const voidDoc = <T>(entity: string, key: string) =>
     async (id: string, syncToken: string, requestId: string): Promise<T> => {
@@ -299,9 +303,9 @@ export function createQuickBooksClient(options: ClientOptions): QuickBooksClient
     createCreditMemo: create<QboCreditMemo>('creditmemo', 'CreditMemo'),
     updateCreditMemo: create<QboCreditMemo>('creditmemo', 'CreditMemo'),
     getCreditMemo: read<QboCreditMemo>('creditmemo', 'CreditMemo'),
-    voidCreditMemo: voidDoc<QboCreditMemo>('creditmemo', 'CreditMemo'),
 
     createRefundReceipt: create<QboRefundReceipt>('refundreceipt', 'RefundReceipt'),
+    updateRefundReceipt: create<QboRefundReceipt>('refundreceipt', 'RefundReceipt'),
     getRefundReceipt: read<QboRefundReceipt>('refundreceipt', 'RefundReceipt'),
 
     createJournalEntry: create<QboJournalEntry>('journalentry', 'JournalEntry'),

@@ -8,6 +8,7 @@ import { Card } from '@/components/ui/Card'
 import { Field, Input, Select } from '@/components/ui/Field'
 import {
   applyCreditAction,
+  unapplyCreditAction,
   creditShareLinkAction,
   emailCreditAction,
   refundCreditAction,
@@ -25,7 +26,7 @@ const METHODS = [
   { value: 'OTHER', label: 'Other' },
 ]
 
-function SubmitButton({ idle, busy, variant = 'primary' }: { idle: string; busy: string; variant?: 'primary' | 'cash' }) {
+function SubmitButton({ idle, busy, variant = 'primary' }: { idle: string; busy: string; variant?: 'primary' | 'cash' | 'secondary' }) {
   const { pending } = useFormStatus()
   return (
     <Button type="submit" variant={variant} size="lg" block disabled={pending}>
@@ -50,6 +51,7 @@ export function CreditActions({
   customerEmail,
   customerPhone,
   total,
+  amount,
   remaining,
   currency,
   canSend,
@@ -62,7 +64,10 @@ export function CreditActions({
   customerName: string
   customerEmail: string | null
   customerPhone: string | null
+  /** Already formatted for display. Never do arithmetic on it. */
   total: string
+  /** The raw decimal, for deciding what can still be done with the credit. */
+  amount: string
   remaining: string
   currency: string
   canSend: boolean
@@ -71,6 +76,7 @@ export function CreditActions({
   voided: boolean
 }) {
   const [applyState, applyAction] = useActionState(applyCreditAction, EMPTY)
+  const [unapplyState, unapplyAction] = useActionState(unapplyCreditAction, EMPTY)
   const [emailState, emailAction] = useActionState(emailCreditAction, EMPTY)
   const [textState, textAction] = useActionState(textCreditAction, EMPTY)
 
@@ -93,10 +99,21 @@ export function CreditActions({
   const [linking, startLinking] = useTransition()
 
   const notice =
-    linkNotice ?? applyState.message ?? refundState.message ?? emailState.message ?? textState.message
+    linkNotice ??
+    applyState.message ??
+    unapplyState.message ??
+    refundState.message ??
+    emailState.message ??
+    textState.message
   const error =
-    applyState.error ?? refundState.error ?? emailState.error ?? textState.error
+    applyState.error ?? unapplyState.error ?? refundState.error ?? emailState.error ?? textState.error
   const hasCredit = Number(remaining) > 0 && !voided
+  /**
+   * What has been spent against invoices, and can therefore be taken back.
+   * From the raw amounts — `total` arrives formatted as "$20.91", and
+   * subtracting a currency string gets you NaN and a button that never appears.
+   */
+  const applied = Number(amount) - Number(remaining)
 
   function copyLink() {
     setLinkNotice(null)
@@ -208,6 +225,23 @@ export function CreditActions({
         <form action={applyAction}>
           <input type="hidden" name="creditMemoId" value={creditMemoId} />
           <SubmitButton idle="Apply to open invoices" busy="Applying…" variant="cash" />
+        </form>
+      ) : null}
+
+      {/* Unapplying is a different operation from voiding: the credit survives
+          and becomes available again, and only its link to the invoice is
+          reversed (docs/08 §17). The button says so. */}
+      {canApply && applied > 0 && !voided ? (
+        <form action={unapplyAction}>
+          <input type="hidden" name="creditMemoId" value={creditMemoId} />
+          <SubmitButton
+            idle="Take it back off the invoices"
+            busy="Unapplying…"
+            variant="secondary"
+          />
+          <p className="mt-1 text-xs text-ink-subtle">
+            The credit stays, and goes back to being available.
+          </p>
         </form>
       ) : null}
 

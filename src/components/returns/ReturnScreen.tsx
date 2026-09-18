@@ -11,6 +11,7 @@ import { Pill } from '@/components/ui/Pill'
 import { createReturnAction, type CreditState } from '@/app/(app)/credits/actions'
 import type { ReturnableLine } from '@/server/services/return.service'
 import { pluralize } from '@/server/domain/uom'
+import { money } from '@/lib/format'
 
 const EMPTY: CreditState = {}
 
@@ -355,12 +356,4 @@ export function ReturnScreen({
       ) : null}
     </form>
   )
-}
-
-function money(value: string | number, currency: string): string {
-  return new Intl.NumberFormat('en-US', {
-    style: 'currency',
-    currency,
-    minimumFractionDigits: 2,
-  }).format(Number(value))
 }

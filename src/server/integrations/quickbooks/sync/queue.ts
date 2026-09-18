@@ -96,36 +96,86 @@ export async function enqueue(
 }
 
 /**
- * Claims one job for this worker, atomically.
+ * How long a worker may hold a job before another may take it (docs/08 §19).
  *
- * `UPDATE … WHERE status = 'PENDING' … RETURNING` with `FOR UPDATE SKIP LOCKED`
- * underneath: two workers never take the same job, and a busy job never blocks
- * a free one. Same discipline as the ledger's row locks, for the same reason —
- * the alternative is a duplicate invoice.
+ * Generous relative to a QuickBooks call, because reclaiming a job that is
+ * merely slow costs a wasted round trip, while never reclaiming one costs a
+ * document that silently never syncs.
+ */
+export const LEASE_SECONDS = 300
+
+/**
+ * Claims one job for this worker, atomically (docs/08 §19).
+ *
+ * One `UPDATE … WHERE id = (SELECT … FOR UPDATE SKIP LOCKED LIMIT 1)`. The
+ * inner select takes a row lock; `SKIP LOCKED` means a second worker walks past
+ * it to the next free job rather than waiting. Two workers therefore never hold
+ * the same job, and a busy queue does not serialise itself. Same discipline as
+ * the ledger's balance rows, for the same reason — the alternative here is a
+ * duplicate invoice.
+ *
+ * Eligible jobs are the queued ones **and** any whose lease has expired: a
+ * worker can be killed mid-call, and a job nobody will ever pick up again is
+ * worse than one attempted twice. Reclaiming is safe precisely because the
+ * request id stays with the job, so a second attempt lands on the document the
+ * first one created rather than beside it.
  */
 export async function claimNext(
   prisma: { $queryRaw<T = unknown>(query: Prisma.Sql): Promise<T> },
   organizationId: string,
   now = new Date(),
+  leaseOwner = 'inline',
 ): Promise<{ id: string } | null> {
-  const rows = await prisma.$queryRaw<{ id: string }[]>(Prisma.sql`
+  const leaseUntil = new Date(now.getTime() + LEASE_SECONDS * 1000)
+
+  const rows = await prisma.$queryRaw<{ id: string; reclaimed: boolean }[]>(Prisma.sql`
     UPDATE sync_job
        SET status = 'IN_PROGRESS',
            attempts = attempts + 1,
-           last_attempted_at = ${now}
+           last_attempted_at = ${now},
+           lease_owner = ${leaseOwner},
+           lease_expires_at = ${leaseUntil},
+           reclaimed_count = reclaimed_count
+             + CASE WHEN status = 'IN_PROGRESS' THEN 1 ELSE 0 END
      WHERE id = (
        SELECT id
          FROM sync_job
         WHERE organization_id = ${organizationId}
-          AND status IN ('PENDING', 'RETRYING')
-          AND next_attempt_at <= ${now}
+          AND (
+            (status IN ('PENDING', 'RETRYING') AND next_attempt_at <= ${now})
+            -- Abandoned by a worker that did not come back.
+            OR (status = 'IN_PROGRESS' AND lease_expires_at IS NOT NULL AND lease_expires_at <= ${now})
+          )
         ORDER BY created_at
         FOR UPDATE SKIP LOCKED
         LIMIT 1
      )
-     RETURNING id
+     RETURNING id, (reclaimed_count > 0) AS reclaimed
   `)
-  return rows[0] ?? null
+  return rows[0] ? { id: rows[0].id } : null
+}
+
+/**
+ * Jobs stuck IN_PROGRESS past their lease, across every organization.
+ *
+ * Reported rather than silently reclaimed, so "the worker died on Tuesday" is
+ * something a person can see rather than something that merely resolves itself
+ * five minutes later with no trace.
+ */
+export async function countExpiredLeases(
+  prisma: { $queryRaw<T = unknown>(query: Prisma.Sql): Promise<T> },
+  organizationId: string,
+  now = new Date(),
+): Promise<number> {
+  const rows = await prisma.$queryRaw<{ count: bigint }[]>(Prisma.sql`
+    SELECT COUNT(*)::bigint AS count
+      FROM sync_job
+     WHERE organization_id = ${organizationId}
+       AND status = 'IN_PROGRESS'
+       AND lease_expires_at IS NOT NULL
+       AND lease_expires_at <= ${now}
+  `)
+  return Number(rows[0]?.count ?? 0)
 }
 
 /**
@@ -175,6 +225,8 @@ export async function finish(
         errorCode: null,
         errorCategory: null,
         blockedOnJobId: null,
+        leaseOwner: null,
+        leaseExpiresAt: null,
         ...(outcome.sourceHash ? { sourceHash: outcome.sourceHash } : {}),
       },
     })
@@ -190,6 +242,8 @@ export async function finish(
       data: {
         status: 'BLOCKED_DEPENDENCY',
         blockedOnJobId: outcome.blockedOnJobId,
+        leaseOwner: null,
+        leaseExpiresAt: null,
         errorCategory: 'DEPENDENCY',
         lastError: outcome.message,
       },
@@ -204,6 +258,8 @@ export async function finish(
     where: { id: jobId },
     data: {
       status,
+      leaseOwner: null,
+      leaseExpiresAt: null,
       errorCategory: outcome.category,
       errorCode: outcome.code ?? null,
       lastError: exhausted

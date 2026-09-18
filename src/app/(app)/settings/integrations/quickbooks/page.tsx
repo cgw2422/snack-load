@@ -6,6 +6,7 @@ import {
   describeConnection,
   listQuickBooksAccounts,
   listSyncHistory,
+  listSplitPayments,
   listSyncIssues,
 } from '@/server/services/integration.service'
 import { listCogsBatches } from '@/server/services/cogs.service'
@@ -30,11 +31,12 @@ export default async function Page({ searchParams }: PageProps<'/settings/integr
   const outcome = typeof params.connected === 'string' ? params.connected : null
   const company = typeof params.company === 'string' ? params.company : null
 
-  const [connection, issues, history, cogsBatches] = await Promise.all([
+  const [connection, issues, history, cogsBatches, splitPayments] = await Promise.all([
     describeConnection(ctx),
     listSyncIssues(ctx),
     listSyncHistory(ctx),
     listCogsBatches(ctx),
+    listSplitPayments(ctx),
   ])
 
   /**
@@ -67,6 +69,8 @@ export default async function Page({ searchParams }: PageProps<'/settings/integr
       history={history}
       accounts={accounts}
       cogsBatches={cogsBatches}
+      splitPayments={splitPayments}
+      currency={ctx.organization.currency}
       banner={banner}
     />
   )

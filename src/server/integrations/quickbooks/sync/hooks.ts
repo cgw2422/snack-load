@@ -43,3 +43,24 @@ export async function enqueueIfConnected(
 
   await enqueue(prisma, organizationId, input)
 }
+
+/**
+ * Queues the reversal of a document that may already be in QuickBooks
+ * (docs/08 §17).
+ *
+ * Called from inside the transaction that commits the local reversal, for the
+ * same reason the create hook is: the two commit together or not at all, and
+ * neither can fail a reversal that has to happen whatever Intuit is doing.
+ *
+ * It is enqueued even when the document has not synced yet. The void syncer
+ * finds no mapping and records that there was nothing to reverse — which is
+ * cheaper and more honest than trying to guess here, and leaves a trail either
+ * way.
+ */
+export async function enqueueVoidIfConnected(
+  prisma: HookClient,
+  organizationId: string,
+  input: { entityType: EntityType; localId: string },
+): Promise<void> {
+  await enqueueIfConnected(prisma, organizationId, { ...input, operation: 'VOID' })
+}

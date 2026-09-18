@@ -10,7 +10,10 @@ import { allocateOldestFirst } from '@/server/domain/allocation'
 import { buildTaxSnapshot, type TaxSnapshot } from '@/server/domain/taxSnapshot'
 import { nextDocumentNumber, postInventoryTransaction } from './inventory.service'
 import { writeAudit } from './audit.service'
-import { enqueueIfConnected } from '@/server/integrations/quickbooks/sync/hooks'
+import {
+  enqueueIfConnected,
+  enqueueVoidIfConnected,
+} from '@/server/integrations/quickbooks/sync/hooks'
 import type { CheckoutInput, ReceiptQuery } from '@/lib/schemas/sales'
 import { dateOnly, endOfDayInZone, startOfDayInZone } from '@/lib/dates'
 
@@ -625,6 +628,18 @@ export async function voidSale(
         amountPaid: '0',
       },
     })
+
+    await enqueueVoidIfConnected(tx, ctx.organizationId, {
+      entityType: 'Sale',
+      localId: sale.id,
+    })
+    // The payment is deliberately NOT re-sent. Voiding an invoice in
+    // QuickBooks releases the payments linked to it, leaving the money as
+    // unapplied credit on the customer — the same thing SnackLoad just did
+    // locally. Pushing our own update as well would be a second opinion about
+    // an object QuickBooks has already adjusted. And where QuickBooks refuses
+    // the void because of those links, that refusal is the issue a person
+    // should see, not something to work around (docs/08 §17).
 
     await writeAudit(tx, ctx, {
       action: 'sale.voided',

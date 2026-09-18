@@ -57,6 +57,15 @@ const schema = z.object({
    * integration is worse than no integration: the books look synced and are not.
    */
   QUICKBOOKS_USE_FAKE: z.coerce.boolean().default(false),
+
+  /**
+   * The bearer token a scheduler presents to `/api/internal/quickbooks/sync`.
+   *
+   * Unset means the route refuses every request: a sync worker that anyone can
+   * trigger is a way to burn a distributor's Intuit rate limit from outside.
+   * Generate it the same way as the other secrets.
+   */
+  SYNC_WORKER_TOKEN: z.string().min(24).optional(),
 })
 
 export type Env = z.infer<typeof schema>

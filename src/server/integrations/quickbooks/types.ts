@@ -199,6 +199,8 @@ export type QboLinkedTxn = { TxnId: string; TxnType: string }
 export type QboPayment = {
   Id?: string
   SyncToken?: string
+  /** Present once QuickBooks has voided it. */
+  void?: boolean
   CustomerRef: Ref
   TxnDate: string
   TotalAmt: number
@@ -215,6 +217,8 @@ export type QboPayment = {
 export type QboCreditMemo = {
   Id?: string
   SyncToken?: string
+  /** Set when we have reduced it to nothing; QuickBooks has no void here. */
+  void?: boolean
   DocNumber?: string
   CustomerRef: Ref
   TxnDate: string
@@ -228,6 +232,8 @@ export type QboCreditMemo = {
 export type QboRefundReceipt = {
   Id?: string
   SyncToken?: string
+  /** Set when we have reduced it to nothing; QuickBooks has no void here. */
+  void?: boolean
   DocNumber?: string
   CustomerRef: Ref
   TxnDate: string
@@ -315,6 +321,15 @@ export type QuickBooksClient = {
   updateItem(input: QboItem, requestId: string): Promise<QboItem>
   getItem(id: string): Promise<QboItem | null>
 
+  /**
+   * **Void is not available on every object** (docs/08 §17).
+   *
+   * Intuit documents `operation=void` for Invoice, SalesReceipt, Payment and
+   * BillPayment only. CreditMemo, RefundReceipt and JournalEntry have no void —
+   * the only verb QuickBooks offers them is delete, which destroys the record.
+   * So those three are reversed by a compensating action instead, and the
+   * interface deliberately has no `voidCreditMemo`-shaped method for them.
+   */
   createInvoice(input: QboInvoice, requestId: string): Promise<QboInvoice>
   updateInvoice(input: QboInvoice, requestId: string): Promise<QboInvoice>
   getInvoice(id: string): Promise<QboInvoice | null>
@@ -333,9 +348,9 @@ export type QuickBooksClient = {
   createCreditMemo(input: QboCreditMemo, requestId: string): Promise<QboCreditMemo>
   updateCreditMemo(input: QboCreditMemo, requestId: string): Promise<QboCreditMemo>
   getCreditMemo(id: string): Promise<QboCreditMemo | null>
-  voidCreditMemo(id: string, syncToken: string, requestId: string): Promise<QboCreditMemo>
 
   createRefundReceipt(input: QboRefundReceipt, requestId: string): Promise<QboRefundReceipt>
+  updateRefundReceipt(input: QboRefundReceipt, requestId: string): Promise<QboRefundReceipt>
   getRefundReceipt(id: string): Promise<QboRefundReceipt | null>
 
   createJournalEntry(input: QboJournalEntry, requestId: string): Promise<QboJournalEntry>

@@ -110,6 +110,7 @@ model Organization {
   auditLogs              AuditLog[]
   documentSequences      DocumentSequence[]
   cogsJournalBatches     CogsJournalBatch[]
+  paymentSyncAllocations PaymentSyncAllocation[]
 
   @@map("organization")
 }
@@ -1227,22 +1228,23 @@ model Sale {
   createdAt              DateTime  @default(now()) @map("created_at")
   updatedAt              DateTime  @updatedAt @map("updated_at")
 
-  organization       Organization            @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  customer           Customer                @relation(fields: [customerId], references: [id])
-  route              Route?                  @relation(fields: [routeId], references: [id])
-  routeStop          RouteStop?              @relation(fields: [routeStopId], references: [id])
-  soldBy             User                    @relation("SaleSeller", fields: [soldByUserId], references: [id])
-  voidedBy           User?                   @relation("SaleVoider", fields: [voidedByUserId], references: [id])
-  transaction        InventoryTransaction?   @relation(fields: [inventoryTransactionId], references: [id])
-  items              SaleItem[]
-  receipt            Receipt?
-  deliveries         ReceiptDelivery[]
-  shareLinks         ReceiptShareLink[]
-  signature          Signature?
-  paymentAllocations PaymentAllocation[]
-  creditApplications CreditMemoApplication[]
-  creditMemos        CreditMemo[]
-  returns            Return[]
+  organization           Organization            @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  customer               Customer                @relation(fields: [customerId], references: [id])
+  route                  Route?                  @relation(fields: [routeId], references: [id])
+  routeStop              RouteStop?              @relation(fields: [routeStopId], references: [id])
+  soldBy                 User                    @relation("SaleSeller", fields: [soldByUserId], references: [id])
+  voidedBy               User?                   @relation("SaleVoider", fields: [voidedByUserId], references: [id])
+  transaction            InventoryTransaction?   @relation(fields: [inventoryTransactionId], references: [id])
+  items                  SaleItem[]
+  receipt                Receipt?
+  deliveries             ReceiptDelivery[]
+  shareLinks             ReceiptShareLink[]
+  signature              Signature?
+  paymentAllocations     PaymentAllocation[]
+  paymentSyncAllocations PaymentSyncAllocation[]
+  creditApplications     CreditMemoApplication[]
+  creditMemos            CreditMemo[]
+  returns                Return[]
 
   @@unique([organizationId, saleNumber])
   @@unique([organizationId, idempotencyKey])
@@ -1464,14 +1466,15 @@ model Payment {
   createdAt        DateTime      @default(now()) @map("created_at")
   updatedAt        DateTime      @updatedAt @map("updated_at")
 
-  organization Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  customer     Customer            @relation(fields: [customerId], references: [id])
-  receivedBy   User?               @relation("PaymentReceiver", fields: [receivedByUserId], references: [id])
-  reversedBy   User?               @relation("PaymentReverser", fields: [reversedByUserId], references: [id])
-  routeStop    RouteStop?          @relation(fields: [routeStopId], references: [id])
-  reversalOf   Payment?            @relation("PaymentReversal", fields: [reversalOfId], references: [id])
-  reversal     Payment?            @relation("PaymentReversal")
-  allocations  PaymentAllocation[]
+  organization    Organization            @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  customer        Customer                @relation(fields: [customerId], references: [id])
+  receivedBy      User?                   @relation("PaymentReceiver", fields: [receivedByUserId], references: [id])
+  reversedBy      User?                   @relation("PaymentReverser", fields: [reversedByUserId], references: [id])
+  routeStop       RouteStop?              @relation(fields: [routeStopId], references: [id])
+  reversalOf      Payment?                @relation("PaymentReversal", fields: [reversalOfId], references: [id])
+  reversal        Payment?                @relation("PaymentReversal")
+  allocations     PaymentAllocation[]
+  syncAllocations PaymentSyncAllocation[]
 
   @@unique([organizationId, idempotencyKey])
   @@index([organizationId, customerId, receivedAt])
@@ -2021,6 +2024,12 @@ model IntegrationConnection {
   /// Attempted and succeeded, separately — the same reason `ExternalMapping`
   /// keeps both. "We tried four minutes ago and it failed" and "their books
   /// were last correct on Tuesday" are different answers.
+  /// When the scheduled worker last swept this tenant, and which invocation
+  /// it was. Measured rather than assumed: the dashboard reports worker health
+  /// from this, and says "unknown" when there is nothing to report (docs/08 §18).
+  lastWorkerRunAt   DateTime? @map("last_worker_run_at")
+  lastWorkerId      String?   @map("last_worker_id")
+
   lastSyncAttemptAt DateTime? @map("last_sync_attempt_at")
   lastSyncAt        DateTime? @map("last_sync_at")
   /// Account mappings and tax policy. Shape in
@@ -2168,6 +2177,21 @@ model SyncJob {
   blockedOn      SyncJob?  @relation("SyncDependency", fields: [blockedOnJobId], references: [id])
   blocking       SyncJob[] @relation("SyncDependency")
 
+  /// **The lease** (docs/08 §19).
+  ///
+  /// A worker that claims a job stamps it with its own token and a deadline. A
+  /// crash between claiming and finishing would otherwise leave the job
+  /// IN_PROGRESS forever, and nothing would ever pick it up again — the failure
+  /// mode of every queue that trusts its workers to stay alive.
+  ///
+  /// After the deadline any worker may reclaim it. That is safe because the
+  /// outbound operations are idempotent: the reclaiming worker reuses the same
+  /// request id, so QuickBooks replays rather than duplicates.
+  leaseOwner     String?   @map("lease_owner")
+  leaseExpiresAt DateTime? @map("lease_expires_at")
+  /// How many times this job has been reclaimed from a worker that vanished.
+  reclaimedCount Int       @default(0) @map("reclaimed_count")
+
   lastAttemptedAt DateTime?          @map("last_attempted_at")
   lastError       String?            @map("last_error")
   /// Intuit's own error code, kept verbatim for support.
@@ -2186,6 +2210,7 @@ model SyncJob {
   /// racing another worker to create the same QuickBooks document.
   @@unique([organizationId, provider, entityType, localId, operation])
   @@index([status, nextAttemptAt])
+  @@index([status, leaseExpiresAt])
   @@index([organizationId, entityType, localId])
   @@index([organizationId, status, createdAt])
   @@map("sync_job")
@@ -2270,6 +2295,59 @@ enum CogsBatchStatus {
   POSTED
   /// Superseded or abandoned. Never deleted (rule 6).
   VOIDED
+}
+
+/// How one slice of a SnackLoad payment is represented in the accounting system.
+enum PaymentSyncRepresentation {
+  /// A line on the QuickBooks Payment, linked to the invoice it settles.
+  INVOICE_PAYMENT
+  /// Already banked by the sales receipt the money was taken against. There is
+  /// deliberately no second QuickBooks object: one collection, one cash row.
+  SALES_RECEIPT
+  /// Carried on the QuickBooks Payment with no link, which is how QuickBooks
+  /// holds credit on a customer's account.
+  UNAPPLIED
+}
+
+/// Why a QuickBooks payment total can differ from the SnackLoad one, stated in
+/// rows rather than left for somebody to work out (docs/08 §18).
+///
+/// A runner collects $300. $200 settles an open invoice; $100 was taken at the
+/// counter against a sale that posted as a sales receipt and is already banked
+/// there. QuickBooks correctly shows $200 — and until these rows existed,
+/// nothing said so, which looks exactly like a $100 discrepancy.
+///
+/// A projection, not a financial document: rebuilt from the allocations every
+/// time the payment syncs, so it cannot drift from what was actually sent.
+model PaymentSyncAllocation {
+  id             String              @id @default(cuid())
+  organizationId String              @map("organization_id")
+  provider       IntegrationProvider @default(QUICKBOOKS_ONLINE)
+  paymentId      String              @map("payment_id")
+
+  /// The sale this slice settles. Null for the unapplied remainder, which is
+  /// money on the account rather than money against a document.
+  saleId String? @map("sale_id")
+
+  amount         Decimal                   @db.Decimal(14, 4)
+  representation PaymentSyncRepresentation
+
+  /// The QuickBooks object carrying it, where one exists: the Payment for an
+  /// invoice line, the SalesReceipt for a counter sale.
+  externalId String? @map("external_id")
+
+  /// One generated sentence for the support screen. Never a human note —
+  /// `Payment.notes` stays what a person typed (docs/08 §18).
+  explanation String
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  payment      Payment      @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+  sale         Sale?        @relation(fields: [saleId], references: [id])
+
+  @@index([organizationId, paymentId])
+  @@map("payment_sync_allocation")
 }
 
 enum OutboxStatus {

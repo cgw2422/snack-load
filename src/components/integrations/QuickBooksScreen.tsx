@@ -14,7 +14,13 @@ import { Button } from '@/components/ui/Button'
 import { Card, CardHeader } from '@/components/ui/Card'
 import { Field, Select } from '@/components/ui/Field'
 import { Pill } from '@/components/ui/Pill'
-import type { ConnectionView, SyncHistoryEntry, SyncIssue } from '@/server/services/integration.service'
+import { money } from '@/lib/format'
+import type {
+  ConnectionView,
+  PaymentReconciliation,
+  SyncHistoryEntry,
+  SyncIssue,
+} from '@/server/services/integration.service'
 import type { CogsBatchSummary } from '@/server/services/cogs.service'
 import type { QboAccount } from '@/server/integrations/quickbooks/types'
 import {
@@ -94,6 +100,30 @@ function Notice({ state }: { state: IntegrationState }) {
   )
 }
 
+const OPERATION_LABEL: Record<string, string> = {
+  CREATE: 'Sent',
+  UPDATE: 'Re-sent',
+  VOID: 'Reversed',
+  APPLY_CREDIT: 'Credit applied',
+  REFUND: 'Refunded',
+}
+
+const WORKER_LABEL: Record<ConnectionView['worker']['status'], string> = {
+  HEALTHY: 'Healthy',
+  LATE: 'Running late',
+  STALLED: 'Stalled',
+  UNKNOWN: 'Not seen yet',
+  NOT_CONFIGURED: 'Not configured',
+}
+
+const WORKER_TONE: Record<ConnectionView['worker']['status'], 'cash' | 'alert' | 'stop' | 'neutral'> = {
+  HEALTHY: 'cash',
+  LATE: 'alert',
+  STALLED: 'stop',
+  UNKNOWN: 'neutral',
+  NOT_CONFIGURED: 'neutral',
+}
+
 function when(value: Date | string | null): string {
   if (!value) return 'never'
   const date = typeof value === 'string' ? new Date(value) : value
@@ -111,6 +141,8 @@ export function QuickBooksScreen({
   history,
   accounts,
   cogsBatches,
+  splitPayments,
+  currency,
   banner,
 }: {
   connection: ConnectionView
@@ -118,6 +150,8 @@ export function QuickBooksScreen({
   history: SyncHistoryEntry[]
   accounts: QboAccount[]
   cogsBatches: CogsBatchSummary[]
+  splitPayments: PaymentReconciliation[]
+  currency: string
   banner: string | null
 }) {
   const [connectState, connect] = useActionState(connectAction, {})
@@ -246,18 +280,33 @@ export function QuickBooksScreen({
       {connected || connection.status === 'NEEDS_REAUTH' ? (
         <Card>
           <CardHeader title="Sync health" />
-          <div className="grid grid-cols-2 gap-3 px-4 pb-4 sm:grid-cols-4">
+          <div className="grid grid-cols-2 gap-3 px-4 sm:grid-cols-5">
             {[
-              { label: 'Synced today', value: connection.health.syncedToday, tone: 'cash' as const },
-              { label: 'Queued', value: connection.health.pending, tone: 'neutral' as const },
-              { label: 'Waiting on something', value: connection.health.blocked, tone: 'navy' as const },
-              { label: 'Need attention', value: connection.health.needsAttention, tone: 'alert' as const },
+              { label: 'Synced today', value: connection.health.syncedToday },
+              { label: 'Pending', value: connection.health.pending },
+              { label: 'Retrying', value: connection.health.retrying },
+              { label: 'Waiting on something', value: connection.health.blocked },
+              { label: 'Need attention', value: connection.health.needsAttention },
             ].map((stat) => (
               <div key={stat.label} className="rounded-lg bg-surface-sunken px-3 py-2">
                 <p className="tnum text-xl font-bold text-ink">{stat.value}</p>
                 <p className="text-xs text-ink-muted">{stat.label}</p>
               </div>
             ))}
+          </div>
+
+          {/* Measured, never asserted: this reads the last sweep and the
+              abandoned leases, and says "unknown" when there is nothing to
+              go on rather than showing a reassuring tick (docs/08 §18). */}
+          <div className="flex flex-wrap items-center gap-2 px-4 pb-4 pt-3">
+            <span className="text-sm font-semibold text-ink">Worker</span>
+            <Pill tone={WORKER_TONE[connection.worker.status]}>
+              {WORKER_LABEL[connection.worker.status]}
+            </Pill>
+            <span className="min-w-0 flex-1 text-xs text-ink-muted">
+              {connection.worker.detail}
+              {connection.worker.lastRunAt ? ` Last run ${when(connection.worker.lastRunAt)}.` : ''}
+            </span>
           </div>
         </Card>
       ) : null}
@@ -452,6 +501,66 @@ export function QuickBooksScreen({
         </Card>
       ) : null}
 
+      {/* ── split payments ─────────────────────────────────────────────── */}
+      {splitPayments.length > 0 ? (
+        <Card>
+          <CardHeader title="Payments split across documents" />
+          <div className="px-4 pb-2">
+            <p className="text-sm text-ink-muted">
+              A collection can be worth more than the payment QuickBooks holds for it, and that is
+              correct: money taken at the counter is already banked by its sales receipt. Every
+              penny is accounted for below.
+            </p>
+          </div>
+          <ul className="divide-y divide-line">
+            {splitPayments.map((payment) => (
+              <li key={payment.paymentId} className="px-4 py-3">
+                <div className="flex flex-wrap items-baseline justify-between gap-2">
+                  <p className="text-sm font-semibold text-ink">
+                    {payment.customerName}
+                    <span className="font-normal text-ink-muted"> · {payment.method.toLowerCase()}</span>
+                  </p>
+                  <p className="tnum text-sm font-bold text-ink">
+                    {money(payment.collected, currency)} collected
+                  </p>
+                </div>
+
+                <ul className="mt-2 space-y-1">
+                  {payment.components.map((component, index) => (
+                    <li key={index} className="flex items-start gap-2 text-xs">
+                      <span className="tnum w-16 shrink-0 text-right font-semibold text-ink">
+                        {money(component.amount, currency)}
+                      </span>
+                      <span className="text-ink-muted">{component.explanation}</span>
+                    </li>
+                  ))}
+                </ul>
+
+                <p className="mt-2 flex items-center gap-1.5 text-xs font-semibold">
+                  {payment.balanced ? (
+                    <>
+                      <Check className="size-3.5 text-cash-600" aria-hidden="true" />
+                      <span className="text-cash-700 dark:text-cash-100">
+                        {money(payment.collected, currency)} of {money(payment.collected, currency)}{' '}
+                        accounted for · {money(payment.inQuickBooks, currency)} of it in QuickBooks
+                      </span>
+                    </>
+                  ) : (
+                    <>
+                      <AlertCircle className="size-3.5 text-stop-600" aria-hidden="true" />
+                      <span className="text-stop-600">
+                        {money(payment.unaccounted, currency)} is not accounted for. This is a bug —
+                        please report it.
+                      </span>
+                    </>
+                  )}
+                </p>
+              </li>
+            ))}
+          </ul>
+        </Card>
+      ) : null}
+
       {/* ── COGS journals ──────────────────────────────────────────────── */}
       {connected ? (
         <Card>
@@ -548,8 +657,12 @@ export function QuickBooksScreen({
                       <span className="font-normal text-ink-muted"> · {entry.customerName}</span>
                     ) : null}
                   </p>
+                  {/* The operation matters: applying a credit and taking it
+                      back off produce two rows for the same document, and
+                      without this they read identically. */}
                   <p className="text-xs text-ink-subtle">
-                    {entry.entityType} · {when(entry.at)}
+                    {OPERATION_LABEL[entry.operation] ?? entry.operation} · {entry.entityType} ·{' '}
+                    {when(entry.at)}
                     {entry.externalId ? ` · QuickBooks #${entry.externalId}` : ''}
                   </p>
                 </div>

@@ -17,6 +17,10 @@ export default async function ReturnPage(props: PageProps<'/receipts/[id]/return
 
   const view = await getReturnableLines(ctx, id).catch((error: unknown) => {
     if (isAppError(error) && error.code === 'NOT_FOUND') notFound()
+    // A voided sale cannot be returned against. The sale still exists, so the
+    // honest destination is the receipt itself rather than a 500 — which is
+    // what this used to render for anyone who kept the URL in a tab.
+    if (isAppError(error) && error.code === 'CONFLICT') redirect(`/receipts/${id}`)
     throw error
   })
 
