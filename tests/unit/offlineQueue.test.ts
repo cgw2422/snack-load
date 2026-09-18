@@ -48,8 +48,12 @@ function fakeServer(
   return { impl, calls }
 }
 
+/** Mike, signed in to Ridgeline Distributing. Every entry below is his. */
+const MIKE = 'org-1:user-mike'
+
 const sale = (key: string, quantity = 3) => ({
   id: key,
+  owner: MIKE,
   kind: 'sale' as const,
   endpoint: '/api/v1/sales',
   label: `Joe's Marathon · ${quantity} cases`,
@@ -92,11 +96,11 @@ describe('what the queue carries', () => {
   it('keeps the runner’s own order', async () => {
     await enqueue(sale('first'))
     await enqueue({
-      id: 'payment', kind: 'payment', endpoint: '/api/v1/payments',
+      id: 'payment', owner: MIKE, kind: 'payment', endpoint: '/api/v1/payments',
       label: 'Cash $40', payload: { idempotencyKey: 'payment' },
     })
     await enqueue({
-      id: 'stop', kind: 'stop', endpoint: '/api/v1/route-stops/s-1/outcome',
+      id: 'stop', owner: MIKE, kind: 'stop', endpoint: '/api/v1/route-stops/s-1/outcome',
       label: 'Stop finished', payload: { outcome: 'COMPLETED' },
     })
 
@@ -111,7 +115,7 @@ describe('replaying', () => {
     await enqueue(sale('c'))
 
     const server = fakeServer(() => ({ status: 200, body: { saleId: 'x', saleNumber: 'S-1' } }))
-    const outcome = await replay(server.impl)
+    const outcome = await replay(MIKE, server.impl)
 
     expect(outcome.sent).toBe(3)
     expect(server.calls.map((call) => (call.body.payload as { idempotencyKey: string }).idempotencyKey))
@@ -123,7 +127,7 @@ describe('replaying', () => {
 
     // The server created the sale; the answer never arrived.
     const first = fakeServer(() => 'unreachable')
-    await replay(first.impl)
+    await replay(MIKE, first.impl)
 
     const [afterFailure] = await entries()
     expect(afterFailure.status).toBe('pending')
@@ -133,7 +137,7 @@ describe('replaying', () => {
     // first attempt landed, and does not need to: it sends the same key.
     await retry('lost-response')
     const second = fakeServer(() => ({ status: 200, body: { saleId: 's-1', replayed: true } }))
-    const outcome = await replay(second.impl)
+    const outcome = await replay(MIKE, second.impl)
 
     expect(outcome.sent).toBe(1)
     expect((second.calls[0].body.payload as { idempotencyKey: string }).idempotencyKey).toBe(
@@ -153,7 +157,7 @@ describe('replaying', () => {
     const server = fakeServer((_call, index) =>
       index === 0 ? { status: 200, body: {} } : 'unreachable',
     )
-    const outcome = await replay(server.impl)
+    const outcome = await replay(MIKE, server.impl)
 
     expect(outcome.sent).toBe(1)
     expect(outcome.stoppedBecause).toBe('OFFLINE')
@@ -169,14 +173,14 @@ describe('replaying', () => {
     await enqueue(sale('a'))
 
     const server = fakeServer(() => 'unreachable')
-    await replay(server.impl)
+    await replay(MIKE, server.impl)
 
     const [entry] = await entries()
     expect(entry.nextAttemptAt).toBeGreaterThan(Date.now())
 
     // A second pass now sends nothing at all.
     const again = fakeServer(() => ({ status: 200 }))
-    const outcome = await replay(again.impl)
+    const outcome = await replay(MIKE, again.impl)
     expect(again.calls).toHaveLength(0)
     expect(outcome.sent).toBe(0)
   })
@@ -188,7 +192,7 @@ describe('replaying', () => {
       status: 409,
       body: { error: { message: 'Not enough stock: 36 requested, 12 on hand.' } },
     }))
-    await replay(server.impl)
+    await replay(MIKE, server.impl)
 
     const [entry] = await entries()
     expect(entry.status).toBe('blocked')
@@ -197,7 +201,7 @@ describe('replaying', () => {
 
     // And it is not tried again on its own.
     const second = fakeServer(() => ({ status: 200 }))
-    await replay(second.impl)
+    await replay(MIKE, second.impl)
     expect(second.calls).toHaveLength(0)
   })
 
@@ -205,7 +209,7 @@ describe('replaying', () => {
     await enqueue(sale('a'))
 
     const server = fakeServer(() => ({ status: 401, body: { error: { message: 'Sign in' } } }))
-    const outcome = await replay(server.impl)
+    const outcome = await replay(MIKE, server.impl)
 
     expect(outcome.stoppedBecause).toBe('AUTH')
     const [entry] = await entries()
@@ -219,8 +223,8 @@ describe('replaying', () => {
 
     const server = fakeServer(() => ({ status: 200, body: {} }))
     // A reconnect event and a visibility change, at the same instant.
-    const first = replay(server.impl)
-    const second = replay(server.impl)
+    const first = replay(MIKE, server.impl)
+    const second = replay(MIKE, server.impl)
 
     // The second caller joins the pass already running rather than starting
     // another — which is why both see the same result.
@@ -241,7 +245,7 @@ describe('replaying', () => {
       status: 200,
       body: { saleId: 's-1', saleNumber: 'S-01182', total: '66.00', repriced: true },
     }))
-    await replay(server.impl)
+    await replay(MIKE, server.impl)
 
     const [entry] = await entries()
     expect(entry.status).toBe('done')
@@ -250,14 +254,46 @@ describe('replaying', () => {
   })
 })
 
+describe('a phone two people have signed in to', () => {
+  const SARAH = 'org-1:user-sarah'
+
+  it('sends only what the person signed in queued', async () => {
+    await enqueue(sale('mike-1'))
+    await enqueue({ ...sale('sarah-1'), owner: SARAH })
+    await enqueue(sale('mike-2'))
+
+    const server = fakeServer(() => ({ status: 200, body: { saleId: 's' } }))
+    const outcome = await replay(MIKE, server.impl)
+
+    expect(outcome.sent).toBe(2)
+    expect(server.calls).toHaveLength(2)
+
+    const statuses = Object.fromEntries((await entries()).map((row) => [row.id, row.status]))
+    expect(statuses).toEqual({ 'mike-1': 'done', 'sarah-1': 'pending', 'mike-2': 'done' })
+  })
+
+  it('leaves the other sign-in’s sale intact rather than dropping it', async () => {
+    await enqueue({ ...sale('sarah-1'), owner: SARAH })
+
+    const server = fakeServer(() => ({ status: 200, body: { saleId: 's' } }))
+    await replay(MIKE, server.impl)
+
+    expect(server.calls).toHaveLength(0)
+
+    // Visible to Mike as somebody else's, and still Sarah's to send.
+    expect((await snapshot(MIKE)).stranded).toBe(1)
+    expect((await snapshot(SARAH)).pending).toBe(1)
+  })
+})
+
 describe('what a person can do with a stuck entry', () => {
   it('retries a blocked entry only when asked', async () => {
     await enqueue(sale('a'))
-    await replay(fakeServer(() => ({ status: 422, body: { error: { message: 'No' } } })).impl)
-    expect((await snapshot()).blocked).toBe(1)
+    await replay(MIKE, fakeServer(() => ({ status: 422, body: { error: { message: 'No' } } })).impl)
+    expect((await snapshot(MIKE)).blocked).toBe(1)
 
     await retry('a')
-    expect((await snapshot()).pending).toBe(1)
+    expect((await snapshot(MIKE)).pending).toBe(1)
   })
 
   it('discards a blocked entry, and nothing else', async () => {
@@ -265,6 +301,7 @@ describe('what a person can do with a stuck entry', () => {
     await enqueue(sale('b'))
     // Only the first is refused; the second never gets sent, so it stays pending.
     await replay(
+      MIKE,
       fakeServer((_call, index) =>
         index === 0 ? { status: 422, body: { error: { message: 'No' } } } : 'unreachable',
       ).impl,

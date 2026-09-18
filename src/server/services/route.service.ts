@@ -5,7 +5,7 @@ import type { AuthContext } from '@/server/auth/context'
 import { can, requirePermission } from '@/server/auth/context'
 import { conflict, forbidden, notFound } from '@/lib/errors'
 import { dateOnly, todayDateOnly } from '@/lib/dates'
-import { toAmountString } from '@/server/domain/money'
+import { sum, toAmountString } from '@/server/domain/money'
 import {
   DAY_NAMES,
   daysOverdue,
@@ -719,7 +719,10 @@ export async function getRoute(ctx: AuthContext, routeId: string): Promise<Route
     startedAt: route.startedAt?.toISOString() ?? null,
     completedAt: route.completedAt?.toISOString() ?? null,
     salesTotal: toAmountString(
-      route.sales.reduce((sum, sale) => sum + Number(sale.total), 0).toFixed(2),
+      // Summed as decimals, not floats: a route with forty sales on it is
+      // exactly the case where accumulated binary error shows up as a cent
+      // that nothing accounts for (docs/02 §M1).
+      sum(route.sales.map((sale) => sale.total)),
     ),
     collectedTotal: toAmountString(payments._sum.amount ?? 0),
     stops: route.stops.map((stop) => ({
@@ -802,7 +805,10 @@ export async function listRoutes(
     completedStops: route.stops.filter((s) => FINISHED.has(s.status)).length,
     totalStops: route.stops.length,
     salesTotal: toAmountString(
-      route.sales.reduce((sum, sale) => sum + Number(sale.total), 0).toFixed(2),
+      // Summed as decimals, not floats: a route with forty sales on it is
+      // exactly the case where accumulated binary error shows up as a cent
+      // that nothing accounts for (docs/02 §M1).
+      sum(route.sales.map((sale) => sale.total)),
     ),
   }))
 }

@@ -76,3 +76,23 @@ export function fileResponse(
     },
   })
 }
+
+/**
+ * A read the phone is allowed to keep a copy of (docs/05 §2).
+ *
+ * `no-store` is not a contradiction. It keeps the response out of every cache
+ * that decides for itself what to keep — the browser's HTTP cache, a CDN, a
+ * corporate proxy — because this is one tenant's data and none of them can tell
+ * two runners apart. The only copy kept is the one the service worker puts
+ * there deliberately, in a cache named for the signed-in user and emptied when
+ * they sign out.
+ */
+export function snapshotResponse(body: { asOf: string }): NextResponse {
+  return NextResponse.json(body, {
+    headers: {
+      'Cache-Control': 'private, no-store',
+      /** Lets the service worker label a cached figure without parsing it. */
+      'X-Snapshot-As-Of': body.asOf,
+    },
+  })
+}

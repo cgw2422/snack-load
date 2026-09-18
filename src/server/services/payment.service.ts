@@ -299,7 +299,9 @@ export async function getReceivables(ctx: AuthContext): Promise<{
     }
   }
 
-  const rows = [...byCustomer.values()].sort((a, b) => Number(b.balance) - Number(a.balance))
+  // Biggest debt first. Compared as decimals — ordering money by float is the
+  // same mistake as adding it by float, just quieter.
+  const rows = [...byCustomer.values()].sort((a, b) => m(b.balance).comparedTo(m(a.balance)))
   return { rows, total: toAmountString(sum(rows.map((r) => r.balance))) }
 }
 

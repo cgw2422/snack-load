@@ -1,4 +1,4 @@
-import { entries, forget, update, type QueueEntry } from './queue'
+import { entries, entriesFor, forget, update, type QueueEntry } from './queue'
 
 /**
  * Sending what the queue is holding (docs/05 §3).
@@ -19,6 +19,10 @@ import { entries, forget, update, type QueueEntry } from './queue'
  *     guarantee; everything else is scheduling.
  *  5. **A refusal stops being retried.** A validation error will not fix itself,
  *     so it is shown with the server's own words rather than looped forever.
+ *  6. **Only the owner's entries go.** A drain sends what the person currently
+ *     signed in queued, and nothing else. Anything left by an earlier sign-in
+ *     on a shared phone is left exactly where it is — replaying it would post
+ *     one runner's sale under another runner's session.
  */
 
 /** A refusal: retrying will not change the answer. */
@@ -33,23 +37,27 @@ export type ReplayOutcome = {
   stoppedBecause: 'EMPTY' | 'OFFLINE' | 'BLOCKED' | 'AUTH' | null
 }
 
-let running: Promise<ReplayOutcome> | null = null
+const running = new Map<string, Promise<ReplayOutcome>>()
 
 /**
- * Drains the queue. Concurrent calls share one pass — a reconnect event and a
- * visibility change firing together must not send everything twice.
+ * Drains what `owner` has queued. Concurrent calls share one pass — a reconnect
+ * event and a visibility change firing together must not send everything twice.
  */
-export function replay(fetchImpl: typeof fetch = fetch): Promise<ReplayOutcome> {
-  running ??= drain(fetchImpl).finally(() => {
-    running = null
+export function replay(owner: string, fetchImpl: typeof fetch = fetch): Promise<ReplayOutcome> {
+  const existing = running.get(owner)
+  if (existing) return existing
+
+  const pass = drain(owner, fetchImpl).finally(() => {
+    running.delete(owner)
   })
-  return running
+  running.set(owner, pass)
+  return pass
 }
 
-async function drain(fetchImpl: typeof fetch): Promise<ReplayOutcome> {
+async function drain(owner: string, fetchImpl: typeof fetch): Promise<ReplayOutcome> {
   const outcome: ReplayOutcome = { sent: 0, blocked: 0, stoppedBecause: null }
 
-  const queued = (await entries()).filter((entry) => entry.status !== 'done')
+  const queued = (await entriesFor(owner)).filter((entry) => entry.status !== 'done')
   if (queued.length === 0) {
     outcome.stoppedBecause = 'EMPTY'
     return outcome

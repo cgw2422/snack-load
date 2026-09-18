@@ -485,13 +485,36 @@ describe('routes', () => {
       ).rejects.toThrow(/day this store should be visited/i)
     })
 
-    it('will not let a stop be finished twice', async () => {
+    it('gives the same answer when the same outcome is sent twice', async () => {
+      await startRoute(mike.ctx, routeId)
+      const route = await getRoute(mike.ctx, routeId)
+
+      const first = await completeStop(mike.ctx, {
+        stopId: route.stops[0].id, outcome: 'COMPLETED',
+      })
+      const again = await completeStop(mike.ctx, {
+        stopId: route.stops[0].id, outcome: 'COMPLETED',
+      })
+
+      // A stop finished on a dead cell tower gets queued and sent again when
+      // the signal returns. The replay must not read as a failure (docs/05 §3).
+      expect(again).toEqual(first)
+
+      const after = await getRoute(mike.ctx, routeId)
+      expect(after.stops[0].status).toBe('COMPLETED')
+      expect(after.stops.filter((stop) => stop.status === 'COMPLETED')).toHaveLength(1)
+    })
+
+    it('refuses a different outcome for a stop that is already finished', async () => {
       await startRoute(mike.ctx, routeId)
       const route = await getRoute(mike.ctx, routeId)
       await completeStop(mike.ctx, { stopId: route.stops[0].id, outcome: 'COMPLETED' })
+
+      // "Closed" and "completed" are not the same visit; overwriting one with
+      // the other would lose what actually happened.
       await expect(
-        completeStop(mike.ctx, { stopId: route.stops[0].id, outcome: 'COMPLETED' }),
-      ).rejects.toThrow(/already done/i)
+        completeStop(mike.ctx, { stopId: route.stops[0].id, outcome: 'CLOSED' }),
+      ).rejects.toThrow(/already marked/i)
     })
 
     it("keeps one runner out of another runner's route", async () => {

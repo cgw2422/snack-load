@@ -37,6 +37,16 @@ export type QueueStatus =
 
 export type QueueEntry = {
   id: string
+  /**
+   * Who queued this, as `organizationId:userId`.
+   *
+   * A phone is shared. If a runner signs out with unsent sales and a relief
+   * driver signs in, those sales must not be replayed — the server would post
+   * them as the person now holding the session, against the wrong route and
+   * possibly the wrong organization. So they are not deleted either: they stay
+   * put, stranded but intact, until their owner signs back in.
+   */
+  owner: string
   kind: QueueKind
   /** Where to send it. Built when the entry is created, not when it is sent. */
   endpoint: string
@@ -63,6 +73,8 @@ export type QueueSnapshot = {
   pending: number
   blocked: number
   sending: number
+  /** Entries belonging to a different sign-in on this device. Shown, not sent. */
+  stranded: number
   entries: QueueEntry[]
 }
 
@@ -90,6 +102,7 @@ async function nextSequence(): Promise<number> {
 
 export async function enqueue(input: {
   id: string
+  owner: string
   kind: QueueKind
   endpoint: string
   payload: unknown
@@ -115,31 +128,48 @@ export function resetSequenceForTesting(): void {
   issued = 0
 }
 
+/** Everything on the device, whoever queued it. */
 export async function entries(): Promise<QueueEntry[]> {
   if (!available()) return []
   const rows = await all<QueueEntry>(QUEUE)
   return rows.sort((a, b) => a.sequence - b.sequence)
 }
 
-export async function snapshot(): Promise<QueueSnapshot> {
+/** Only what the person currently signed in may send. */
+export async function entriesFor(owner: string): Promise<QueueEntry[]> {
+  return (await entries()).filter((row) => row.owner === owner)
+}
+
+export async function snapshot(owner: string): Promise<QueueSnapshot> {
   const rows = await entries()
+  const mine = rows.filter((row) => row.owner === owner)
   return {
-    pending: rows.filter((row) => row.status === 'pending').length,
-    sending: rows.filter((row) => row.status === 'sending').length,
-    blocked: rows.filter((row) => row.status === 'blocked').length,
-    entries: rows,
+    pending: mine.filter((row) => row.status === 'pending').length,
+    sending: mine.filter((row) => row.status === 'sending').length,
+    blocked: mine.filter((row) => row.status === 'blocked').length,
+    stranded: rows.length - mine.length,
+    entries: mine,
   }
 }
 
-export function subscribe(listener: (snapshot: QueueSnapshot) => void): () => void {
+let watching: string | null = null
+
+export function subscribe(
+  owner: string,
+  listener: (snapshot: QueueSnapshot) => void,
+): () => void {
+  watching = owner
   listeners.add(listener)
   void notify()
-  return () => listeners.delete(listener)
+  return () => {
+    listeners.delete(listener)
+    if (listeners.size === 0) watching = null
+  }
 }
 
 async function notify(): Promise<void> {
-  if (listeners.size === 0) return
-  const current = await snapshot()
+  if (listeners.size === 0 || watching === null) return
+  const current = await snapshot(watching)
   for (const listener of listeners) listener(current)
 }
 
