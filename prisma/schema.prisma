@@ -109,6 +109,7 @@ model Organization {
   notifications          Notification[]
   auditLogs              AuditLog[]
   documentSequences      DocumentSequence[]
+  cogsJournalBatches     CogsJournalBatch[]
 
   @@map("organization")
 }
@@ -166,6 +167,7 @@ model User {
   reassignmentsCreated  RouteAssignmentHistory[] @relation("ReassignActor")
   importJobs            ImportJob[]              @relation("ImportCreator")
   integrationsConnected IntegrationConnection[]  @relation("IntegrationConnector")
+  cogsBatches           CogsJournalBatch[]       @relation("CogsBatchCreator")
   notifications         Notification[]
   auditLogs             AuditLog[]
 
@@ -1972,9 +1974,13 @@ enum IntegrationProvider {
 }
 
 enum IntegrationStatus {
-  CONNECTED
+  /// Never connected, or deliberately disconnected. Mappings are kept.
   DISCONNECTED
-  EXPIRED
+  /// The OAuth round trip is in flight: state issued, callback not yet back.
+  CONNECTING
+  CONNECTED
+  /// Refresh failed permanently. Sales carry on; sync waits for a human.
+  NEEDS_REAUTH
   ERROR
 }
 
@@ -1983,8 +1989,16 @@ model IntegrationConnection {
   organizationId String              @map("organization_id")
   provider       IntegrationProvider
   status         IntegrationStatus   @default(DISCONNECTED)
-  realmId        String?             @map("realm_id")
-  companyName    String?             @map("company_name")
+
+  /// Sandbox or production, chosen explicitly when connecting and stored on the
+  /// connection (docs/08 §2). Never inferred from NODE_ENV: a staging database
+  /// pointed at a production realm is exactly the accident this prevents.
+  environment QuickBooksEnvironment @default(SANDBOX)
+
+  /// The QuickBooks company. `realmId` is the identity; `companyName` is for
+  /// humans and is refreshed from Intuit, never matched on.
+  realmId     String? @map("realm_id")
+  companyName String? @map("company_name")
 
   /// AES-256-GCM sealed as v1:iv:tag:ciphertext. Decrypted only inside the
   /// integration service; never logged, never returned by any API (docs/04 §7).
@@ -1992,10 +2006,26 @@ model IntegrationConnection {
   refreshTokenEncrypted String?   @map("refresh_token_encrypted")
   tokenExpiresAt        DateTime? @map("token_expires_at")
   refreshExpiresAt      DateTime? @map("refresh_expires_at")
+  /// The scopes Intuit actually granted, as returned by the token endpoint.
+  grantedScope          String?   @map("granted_scope")
+  /// When the refresh token last rotated. Intuit issues a new one on every
+  /// refresh, so this is also "when did we last successfully refresh".
+  tokenRotatedAt        DateTime? @map("token_rotated_at")
+  /// Guards the OAuth round trip against CSRF and against a callback landing on
+  /// the wrong tenant. Single use, cleared when the callback is consumed.
+  oauthState            String?   @map("oauth_state")
+  oauthStateIssuedAt    DateTime? @map("oauth_state_issued_at")
 
   connectedByUserId String?   @map("connected_by_user_id")
   connectedAt       DateTime? @map("connected_at")
+  /// Attempted and succeeded, separately — the same reason `ExternalMapping`
+  /// keeps both. "We tried four minutes ago and it failed" and "their books
+  /// were last correct on Tuesday" are different answers.
+  lastSyncAttemptAt DateTime? @map("last_sync_attempt_at")
   lastSyncAt        DateTime? @map("last_sync_at")
+  /// Account mappings and tax policy. Shape in
+  /// `src/server/integrations/quickbooks/settings.ts`; QuickBooks account IDs,
+  /// never account names (docs/08 §6).
   settingsJson      Json      @default("{}") @map("settings_json")
   lastError         String?   @map("last_error")
   createdAt         DateTime  @default(now()) @map("created_at")
@@ -2055,35 +2085,109 @@ model ExternalMapping {
   @@map("external_mapping")
 }
 
+/// The sync state machine (docs/08 §4).
 enum SyncStatus {
+  /// Queued, not yet picked up.
   PENDING
+  /// A worker holds it. Claimed atomically, so two workers cannot both run it.
   IN_PROGRESS
+  /// QuickBooks holds a document that reconciles to ours.
   SYNCED
+  /// Terminal failure that is not worth another automatic attempt, but is not
+  /// a human's problem either — kept distinct from NEEDS_ATTENTION so the
+  /// issues screen is only ever things somebody can act on.
   FAILED
+  /// Transient: a timeout, a 429, a 5xx. Backs off and tries again.
   RETRYING
+  /// A human has to change something: an account mapping, a tax setting, a
+  /// revoked authorization, a validation QuickBooks rejected.
   NEEDS_ATTENTION
+  /// Waiting on another document. An invoice whose customer has not mapped yet
+  /// is blocked, not failed, and must not be retried against Intuit at all.
+  BLOCKED_DEPENDENCY
+}
+
+/// Why a job stopped, which decides whether a machine or a person retries it.
+enum SyncErrorCategory {
+  /// Timeouts, 429, 5xx. Backoff and retry.
+  TRANSIENT
+  /// Intuit rejected the document. A person must fix the data or a mapping.
+  VALIDATION
+  /// An account, item or customer mapping is missing or points at something
+  /// QuickBooks has since deleted.
+  MAPPING
+  /// QuickBooks would record a different tax figure than we posted (§14).
+  TAX_MISMATCH
+  /// QuickBooks' total does not equal ours to the cent (§37).
+  AMOUNT_MISMATCH
+  /// The connection is gone: revoked, expired beyond refresh, wrong realm.
+  AUTHORIZATION
+  /// Another document this one depends on has not synced.
+  DEPENDENCY
+  /// Somebody edited the QuickBooks copy. Surfaced, never overwritten (§32).
+  EXTERNAL_CONFLICT
+}
+
+/// Sandbox and production are never inferred. A connection names one (§4).
+enum QuickBooksEnvironment {
+  SANDBOX
+  PRODUCTION
 }
 
 model SyncJob {
   id             String              @id @default(cuid())
   organizationId String              @map("organization_id")
   provider       IntegrationProvider
-  entityType     String              @map("entity_type")
-  localId        String              @map("local_id")
-  operation      String
-  status         SyncStatus          @default(PENDING)
-  attempts       Int                 @default(0)
-  nextAttemptAt  DateTime            @default(now()) @map("next_attempt_at")
-  lastError      String?             @map("last_error")
-  payloadJson    Json                @default("{}") @map("payload_json")
-  createdAt      DateTime            @default(now()) @map("created_at")
-  completedAt    DateTime?           @map("completed_at")
+
+  /// What is being pushed: our model name and our primary key (docs/07 §1a).
+  entityType String @map("entity_type")
+  localId    String @map("local_id")
+  /// CREATE, UPDATE, VOID, APPLY_CREDIT, REFUND.
+  operation  String
+
+  status        SyncStatus @default(PENDING)
+  attempts      Int        @default(0)
+  nextAttemptAt DateTime   @default(now()) @map("next_attempt_at")
+
+  /// **The idempotency key sent to Intuit as `requestid`.**
+  ///
+  /// Minted once when the job is created and reused on every retry, which is
+  /// what makes a lost response safe: Intuit replays the original response for
+  /// a repeated request id rather than creating a second document. A new id per
+  /// attempt would be a new document per attempt (docs/08 §5).
+  requestId String @map("request_id")
+
+  /// A hash of the document as we sent it. An unchanged hash on a re-sync means
+  /// their copy is already ours, so the push is a no-op.
+  sourceHash String? @map("source_hash")
+
+  /// The job this one is waiting for. An invoice waits for its customer; a
+  /// payment waits for its invoice. Set when a dependency is found unmapped,
+  /// cleared when the job is released.
+  blockedOnJobId String?   @map("blocked_on_job_id")
+  blockedOn      SyncJob?  @relation("SyncDependency", fields: [blockedOnJobId], references: [id])
+  blocking       SyncJob[] @relation("SyncDependency")
+
+  lastAttemptedAt DateTime?          @map("last_attempted_at")
+  lastError       String?            @map("last_error")
+  /// Intuit's own error code, kept verbatim for support.
+  errorCode       String?            @map("error_code")
+  errorCategory   SyncErrorCategory? @map("error_category")
+
+  payloadJson Json      @default("{}") @map("payload_json")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  completedAt DateTime? @map("completed_at")
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   logs         SyncLog[]
 
+  /// One live job per document per operation. A second enqueue of the same work
+  /// — a re-post, a manual SYNC NOW, a webhook — updates this row instead of
+  /// racing another worker to create the same QuickBooks document.
+  @@unique([organizationId, provider, entityType, localId, operation])
   @@index([status, nextAttemptAt])
   @@index([organizationId, entityType, localId])
+  @@index([organizationId, status, createdAt])
   @@map("sync_job")
 }
 
@@ -2108,6 +2212,65 @@ model SyncLog {
 // ─────────────────────────────────────────────────────────────────────────────
 // Operations
 // ─────────────────────────────────────────────────────────────────────────────
+
+/// A period's cost of goods sold, as a document with permanent identity.
+///
+/// QuickBooks receives COGS as one journal entry per period rather than per
+/// sale line (docs/07 §3). That entry needs something to be a retry *of*, and
+/// "the September journal" is not an identity — a second run with the same date
+/// arithmetic would post a second entry and double the period's cost. So the
+/// batch is a row: it is computed, frozen, and then synced by its own id.
+model CogsJournalBatch {
+  id             String @id @default(cuid())
+  organizationId String @map("organization_id")
+
+  /// The period covered, inclusive of both ends, as dates in the organization's
+  /// timezone. Stored as dates rather than timestamps because a period is a
+  /// calendar fact, not an instant.
+  periodStart DateTime @map("period_start") @db.Date
+  periodEnd   DateTime @map("period_end") @db.Date
+
+  status CogsBatchStatus @default(DRAFT)
+
+  /// COGS of sales posted in the period, at the cost snapshotted on each line.
+  salesCogs  Decimal @default(0) @map("sales_cogs") @db.Decimal(16, 4)
+  /// COGS reversed by live returns in the period, where the goods came back.
+  returnCogs Decimal @default(0) @map("return_cogs") @db.Decimal(16, 4)
+  /// `salesCogs - returnCogs`. What the journal entry debits.
+  totalCogs  Decimal @default(0) @map("total_cogs") @db.Decimal(16, 4)
+
+  /// A hash of the figures and the documents behind them. Recomputing a frozen
+  /// batch and getting a different hash means history moved, which it must not.
+  sourceHash String @map("source_hash")
+
+  /// How many sale and return documents the figures came from, so a human
+  /// reading the batch can see it covers what they expect.
+  saleCount   Int @default(0) @map("sale_count")
+  returnCount Int @default(0) @map("return_count")
+
+  createdByUserId String?   @map("created_by_user_id")
+  postedAt        DateTime? @map("posted_at")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  createdBy    User?        @relation("CogsBatchCreator", fields: [createdByUserId], references: [id])
+
+  /// One batch per period per organization. Two people clicking "close
+  /// September" cannot produce two journals.
+  @@unique([organizationId, periodStart, periodEnd])
+  @@index([organizationId, status])
+  @@map("cogs_journal_batch")
+}
+
+enum CogsBatchStatus {
+  /// Computed and editable: recomputing replaces the figures.
+  DRAFT
+  /// Frozen and queued for QuickBooks. The figures never change again.
+  POSTED
+  /// Superseded or abandoned. Never deleted (rule 6).
+  VOIDED
+}
 
 enum OutboxStatus {
   PENDING

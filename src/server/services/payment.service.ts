@@ -10,6 +10,7 @@ import {
   AllocationError,
 } from '@/server/domain/allocation'
 import { writeAudit } from './audit.service'
+import { enqueueIfConnected } from '@/server/integrations/quickbooks/sync/hooks'
 import type { RecordPaymentInput } from '@/lib/schemas/sales'
 
 /**
@@ -145,6 +146,12 @@ export async function recordPayment(
         data: { balance: { decrement: toAmountString(applied) } },
       })
     }
+
+    await enqueueIfConnected(tx, ctx.organizationId, {
+      entityType: 'Payment',
+      localId: payment.id,
+      operation: 'CREATE',
+    })
 
     await writeAudit(tx, ctx, {
       action: 'payment.recorded',

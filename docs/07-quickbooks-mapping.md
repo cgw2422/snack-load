@@ -24,7 +24,7 @@ already sent never needs to be sent differently.
 | `Sale` (COMPLETED, `balanceDue > 0`) | **Invoice** | Terms from `paymentTermsCode`, due date from `dueDate`. |
 | `Sale` (COMPLETED, `balanceDue = 0` at post time) | **SalesReceipt** | Paid at the counter; no AR leg. See §2. |
 | `Sale` (VOIDED) | **Invoice**, voided | Never deleted. |
-| `SaleItem` | Invoice/SalesReceipt **Line** | Quantity in base units, `unitPrice`, `discountAmount`, taxable flag from the snapshot. |
+| `SaleItem` | Invoice/SalesReceipt **Line** | Quantity in the UoM that was sold (with the unit named in the description), `unitPrice`, taxable flag — all from the snapshot. Discounts cross as their own `DiscountLineDetail` line. |
 | `Payment` | **Payment** | Linked to the invoices its allocations name. |
 | `PaymentAllocation` | Payment **Line.LinkedTxn** | One per allocation. |
 | `Payment.unappliedAmount` | Payment with no `LinkedTxn` | QuickBooks calls this an unapplied payment; the credit sits on the customer. |
@@ -246,6 +246,13 @@ journal, not a new object.
 ---
 
 ## 7. Sync mechanics (already scaffolded)
+
+> **Built in Phase 8.** What follows was the plan; `docs/08` is what the code
+> does. Where the two differ, `docs/08` is right — in particular, the
+> invoice/receipt split lives on `Sale.documentType` rather than on the outbox
+> event, and quantities cross in the unit that was sold rather than in base
+> units, so that `Qty × UnitPrice` equals the line amount on the document a
+> bookkeeper reads.
 
 `OutboxEvent`, `SyncJob`, `SyncLog` and `ExternalMapping` exist from Phase 1.
 The properties Phase 8 must hold to:

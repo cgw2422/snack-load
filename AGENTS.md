@@ -27,6 +27,7 @@ distributors. Mobile-first, multi-tenant, built in phases.
 | `docs/05-pwa-and-native.md` | Mobile specifics, offline posture, native-app compatibility |
 | `docs/06-roadmap.md` | Phases and their exit criteria |
 | `docs/07-quickbooks-mapping.md` | The object mapping Phase 8 implements |
+| `docs/08-quickbooks-integration.md` | **The integration as built.** OAuth, sync states, duplicates, tax, COGS, troubleshooting |
 
 ## Rules that are not negotiable
 

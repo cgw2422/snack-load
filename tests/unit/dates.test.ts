@@ -3,7 +3,9 @@ import {
   dateOnly,
   dayOfWeekInZone,
   dayRangeInZone,
+  endOfLocalDate,
   greetingFor,
+  startOfLocalDate,
   localDateString,
   startOfDayInZone,
   todayDateOnly,
@@ -72,5 +74,54 @@ describe('local day boundaries', () => {
     expect(greetingFor(new Date('2026-09-16T13:00:00Z'), OHIO)).toBe('Good morning,')
     expect(greetingFor(new Date('2026-09-16T18:00:00Z'), OHIO)).toBe('Good afternoon,')
     expect(greetingFor(new Date('2026-09-16T23:00:00Z'), OHIO)).toBe('Good evening,')
+  })
+})
+
+/**
+ * Calendar days versus instants (found while building the COGS batch).
+ *
+ * `startOfDayInZone` takes an instant and asks which local day contains it.
+ * `startOfLocalDate` takes a named day and asks when it began. Feeding
+ * `dateOnly('2026-09-17')` — UTC midnight — to the first one answers for the
+ * 16th in any zone west of UTC, which is what every report filtered by an
+ * explicit date range was doing.
+ */
+describe('named calendar days', () => {
+  it('starts a named day at local midnight, not at UTC midnight', () => {
+    const start = startOfLocalDate('2026-09-17', 'America/New_York')
+    expect(start.toISOString()).toBe('2026-09-17T04:00:00.000Z')
+
+    // The old mistake, kept here so the difference is visible rather than
+    // remembered: an instant of UTC midnight is still the previous evening.
+    expect(startOfDayInZone(dateOnly('2026-09-17'), 'America/New_York').toISOString()).toBe(
+      '2026-09-16T04:00:00.000Z',
+    )
+  })
+
+  it('ends a named day at its last millisecond, inclusively', () => {
+    const end = endOfLocalDate('2026-09-17', 'America/New_York')
+    expect(end.toISOString()).toBe('2026-09-18T03:59:59.999Z')
+    // Not the first instant of tomorrow: the queries compare with <=, and one
+    // millisecond of the next day is one sale on a busy night.
+    expect(end.getTime()).toBe(startOfLocalDate('2026-09-18', 'America/New_York').getTime() - 1)
+  })
+
+  it('handles a day that is not 24 hours long', () => {
+    // US daylight saving ends on 1 November 2026: a 25-hour day.
+    const start = startOfLocalDate('2026-11-01', 'America/New_York')
+    const end = endOfLocalDate('2026-11-01', 'America/New_York')
+    expect(end.getTime() - start.getTime()).toBe(25 * 60 * 60 * 1000 - 1)
+
+    // And the spring transition, a 23-hour day.
+    const springStart = startOfLocalDate('2026-03-08', 'America/New_York')
+    const springEnd = endOfLocalDate('2026-03-08', 'America/New_York')
+    expect(springEnd.getTime() - springStart.getTime()).toBe(23 * 60 * 60 * 1000 - 1)
+  })
+
+  it('agrees with itself east of UTC too', () => {
+    expect(startOfLocalDate('2026-09-17', 'Europe/Berlin').toISOString()).toBe(
+      '2026-09-16T22:00:00.000Z',
+    )
+    expect(startOfLocalDate('2026-09-17', 'UTC').toISOString()).toBe('2026-09-17T00:00:00.000Z')
   })
 })

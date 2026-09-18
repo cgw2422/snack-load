@@ -19,6 +19,7 @@ import {
 } from '@/server/domain/returnMath'
 import { nextDocumentNumber, postInventoryTransaction } from './inventory.service'
 import { writeAudit } from './audit.service'
+import { enqueueIfConnected } from '@/server/integrations/quickbooks/sync/hooks'
 import { applyCreditMemo, issueRefund, snapshotParties } from './credit.service'
 import { pluralize } from '@/server/domain/uom'
 import type { CreateReturnInput } from '@/lib/schemas/returns'
@@ -476,6 +477,17 @@ export async function createReturn(
       await tx.inventoryTransaction.update({
         where: { id: transactionId },
         data: { referenceId: created.id },
+      })
+    }
+
+    // The goods document has no QuickBooks equivalent and should not have one:
+    // its money is the credit memo, and syncing both would double-count it
+    // (docs/07 §5). Only the credit is queued.
+    if (creditMemoId) {
+      await enqueueIfConnected(tx, ctx.organizationId, {
+        entityType: 'CreditMemo',
+        localId: creditMemoId,
+        operation: 'CREATE',
       })
     }
 

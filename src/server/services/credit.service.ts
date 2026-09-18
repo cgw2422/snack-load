@@ -6,6 +6,7 @@ import { conflict, notFound } from "@/lib/errors";
 import { m, round2, toAmountString } from "@/server/domain/money";
 import { nextDocumentNumber } from "./inventory.service";
 import { writeAudit } from "./audit.service";
+import { enqueueIfConnected } from "@/server/integrations/quickbooks/sync/hooks";
 import type {
   ApplyCreditInput,
   CreateAdjustmentCreditInput,
@@ -209,7 +210,7 @@ export async function applyCreditMemo(
 
   await prisma.$transaction(async (tx) => {
     for (const entry of plan) {
-      await tx.creditMemoApplication.create({
+      const application = await tx.creditMemoApplication.create({
         data: {
           organizationId: ctx.organizationId,
           creditMemoId: memo.id,
@@ -217,6 +218,16 @@ export async function applyCreditMemo(
           amount: toAmountString(entry.amount),
           appliedByUserId: ctx.userId,
         },
+        select: { id: true },
+      });
+
+      // Which invoice the credit settled is a decision SnackLoad made — the
+      // originating one first, then oldest-first. QuickBooks would otherwise
+      // apply it oldest-first on its own and disagree with us (docs/08 §7).
+      await enqueueIfConnected(tx, ctx.organizationId, {
+        entityType: 'CreditMemoApplication',
+        localId: application.id,
+        operation: 'APPLY_CREDIT',
       });
 
       const sale = await tx.sale.findFirstOrThrow({
@@ -464,6 +475,12 @@ export async function issueRefund(
       },
     });
 
+    await enqueueIfConnected(tx, ctx.organizationId, {
+      entityType: 'Refund',
+      localId: refund.id,
+      operation: 'REFUND',
+    });
+
     await writeAudit(tx, ctx, {
       action: "refund.issued",
       entityType: "Refund",
@@ -655,7 +672,13 @@ export async function createAdjustmentCredit(
         select: { id: true, number: true },
       });
 
-      await writeAudit(tx, ctx, {
+      await enqueueIfConnected(tx, ctx.organizationId, {
+      entityType: 'CreditMemo',
+      localId: created.id,
+      operation: 'CREATE',
+    });
+
+    await writeAudit(tx, ctx, {
         action: "credit.issued",
         entityType: "CreditMemo",
         entityId: created.id,

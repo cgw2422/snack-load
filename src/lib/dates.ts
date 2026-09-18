@@ -68,6 +68,41 @@ export function endOfDayInZone(date: Date, timeZone: string): Date {
   return startOfDayInZone(next, timeZone)
 }
 
+/**
+ * The instant a named calendar day begins in a zone.
+ *
+ * Distinct from `startOfDayInZone`, and the distinction matters. That one takes
+ * an *instant* and asks which local day contains it. This takes a *date* —
+ * "2026-09-17" — and asks when that day started.
+ *
+ * Passing `dateOnly('2026-09-17')` to the other one is a day-boundary bug
+ * waiting to happen: `dateOnly` builds UTC midnight, which in New York is still
+ * the 16th, so the answer comes back a day early. Every report filtered by an
+ * explicit date range was reading the wrong window in any zone west of UTC.
+ */
+export function startOfLocalDate(value: string | Date, timeZone: string): Date {
+  const text = typeof value === 'string' ? value : value.toISOString().slice(0, 10)
+  const [year, month, day] = text.slice(0, 10).split('-').map(Number)
+  const naive = Date.UTC(year, month - 1, day, 0, 0, 0)
+  // Two passes, so a day that begins across a DST transition still lands right.
+  let instant = new Date(naive - offsetMs(new Date(naive), timeZone))
+  instant = new Date(naive - offsetMs(instant, timeZone))
+  return instant
+}
+
+/**
+ * The last instant of a named calendar day, inclusive.
+ *
+ * An inclusive bound because the queries that use it compare with `<=`. The
+ * exclusive form — the start of the next day — silently pulls in the first
+ * millisecond of tomorrow, which is one sale on a busy night.
+ */
+export function endOfLocalDate(value: string | Date, timeZone: string): Date {
+  const start = startOfLocalDate(value, timeZone)
+  const nextDay = new Date(start.getTime() + 26 * 60 * 60 * 1000)
+  return new Date(startOfDayInZone(nextDay, timeZone).getTime() - 1)
+}
+
 export function dayRangeInZone(date: Date, timeZone: string): { gte: Date; lt: Date } {
   return { gte: startOfDayInZone(date, timeZone), lt: endOfDayInZone(date, timeZone) }
 }

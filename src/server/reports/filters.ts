@@ -1,7 +1,7 @@
 import { Prisma } from '@/generated/prisma/client'
 import { db } from '@/server/db/tenant'
 import type { AuthContext } from '@/server/auth/context'
-import { dateOnly, endOfDayInZone, localDateString, startOfDayInZone } from '@/lib/dates'
+import { endOfLocalDate, localDateString, startOfLocalDate } from '@/lib/dates'
 import type { ReportFilters } from './types'
 
 /**
@@ -26,8 +26,9 @@ export function resolveRange(filters: ReportFilters, timeZone: string): Resolved
   return {
     from,
     to,
-    fromDate: startOfDayInZone(dateOnly(from), timeZone),
-    toDate: endOfDayInZone(dateOnly(to), timeZone),
+    // The named day, not "the local day containing UTC midnight of that day".
+    fromDate: startOfLocalDate(from, timeZone),
+    toDate: endOfLocalDate(to, timeZone),
   }
 }
 

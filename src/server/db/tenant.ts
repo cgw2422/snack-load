@@ -34,7 +34,7 @@ export const TENANT_MODELS = [
   'CreditMemo', 'CreditMemoItem', 'CreditMemoApplication', 'Refund',
   'DocumentSequence',
   'ImportJob', 'ImportRow',
-  'IntegrationConnection', 'ExternalMapping', 'SyncJob', 'SyncLog',
+  'IntegrationConnection', 'ExternalMapping', 'SyncJob', 'SyncLog', 'CogsJournalBatch',
   'OutboxEvent', 'Notification', 'AuditLog',
 ] as const
 
@@ -49,6 +49,9 @@ export const UNDELETABLE_MODELS: ReadonlySet<string> = new Set([
   'Return', 'ReturnItem',
   'CreditMemo', 'CreditMemoItem', 'CreditMemoApplication', 'Refund',
   'InventoryTransaction', 'InventoryTransactionLine', 'AuditLog',
+  // A posted COGS journal is a period's cost as it was reported. It is voided,
+  // never removed, for the same reason a posted sale is (docs/08 §9).
+  'CogsJournalBatch',
 ])
 
 const WHERE_OPS = new Set([

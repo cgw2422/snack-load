@@ -217,11 +217,14 @@ describe('reports', () => {
 
   describe('customers', () => {
     it('compares a store with its own prior window, not with other stores', async () => {
-      // Prior window: a sale dated a fortnight back.
+      // Prior window: a sale placed squarely inside it. Ten days rather than
+      // fourteen because the prior window is the seven days before `from`, and
+      // fourteen lands within a few hours of its far edge — near enough that
+      // the organization's UTC offset decides whether it counts.
       const older = await sell(customerId, 8)
       await db(org.ownerCtx).sale.update({
         where: { id: older.saleId },
-        data: { occurredAt: new Date(Date.now() - 14 * 86_400_000) },
+        data: { occurredAt: new Date(Date.now() - 10 * 86_400_000) },
       })
       // Current window: much smaller.
       await sell(customerId, 2)

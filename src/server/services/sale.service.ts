@@ -10,6 +10,7 @@ import { allocateOldestFirst } from '@/server/domain/allocation'
 import { buildTaxSnapshot, type TaxSnapshot } from '@/server/domain/taxSnapshot'
 import { nextDocumentNumber, postInventoryTransaction } from './inventory.service'
 import { writeAudit } from './audit.service'
+import { enqueueIfConnected } from '@/server/integrations/quickbooks/sync/hooks'
 import type { CheckoutInput, ReceiptQuery } from '@/lib/schemas/sales'
 import { dateOnly, endOfDayInZone, startOfDayInZone } from '@/lib/dates'
 
@@ -458,8 +459,9 @@ export async function checkout(
       data: { referenceId: sale.id },
     })
 
+    let payment: { id: string } | null = null
     if (amountPaid.greaterThan(0)) {
-      const payment = await tx.payment.create({
+      payment = await tx.payment.create({
         data: {
           organizationId: ctx.organizationId,
           customerId: customer.id,
@@ -504,6 +506,21 @@ export async function checkout(
       })
     }
     await tx.customer.update({ where: { id: customer.id }, data: { lastVisitAt: occurredAt } })
+
+    // Same transaction as the sale, so an Intuit outage cannot fail a checkout
+    // and a rolled-back checkout cannot leave a job behind (docs/08 §4).
+    await enqueueIfConnected(tx, ctx.organizationId, {
+      entityType: 'Sale',
+      localId: sale.id,
+      operation: 'CREATE',
+    })
+    if (amountPaid.greaterThan(0) && payment) {
+      await enqueueIfConnected(tx, ctx.organizationId, {
+        entityType: 'Payment',
+        localId: payment.id,
+        operation: 'CREATE',
+      })
+    }
 
     await writeAudit(tx, ctx, {
       action: 'sale.completed',
